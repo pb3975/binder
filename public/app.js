@@ -253,20 +253,18 @@ function openViewer(id, push = true, refreshed = false) {
   $("#v-title").textContent = a.title;
   $("#v-sub").innerHTML = `<span class="dot"></span>${esc(pretty(a.project))} · ${esc(pretty(a.kind))} · ${fmtDate(a.published_at)}`;
   if (state.current !== id || !state.versions || state.versions[0]?.artifact_id !== id) { state.versions = null; state.viewing = null; }
-  showContent(localPath(state.viewing ? state.versions.find((v) => v.version === state.viewing).content_url : a.content_url));
+  showContent(localPath(state.viewing ? state.versions.find((v) => v.version === state.viewing).content_url : a.content_url), id, state.viewing ?? a.version);
   const idx = state.visible.findIndex((x) => x.id === id);
   $("#v-prev").disabled = idx <= 0;
   $("#v-next").disabled = idx < 0 || idx >= state.visible.length - 1;
   renderPanel(a);
   if (push) history.pushState({ viewer: true }, "", `/a/${id}${location.search}`);
 }
-function showContent(src) {
+function showContent(src, id, version) {
   const frame = $("#v-frame");
   if (frame.dataset.src !== src) { frame.src = src; frame.dataset.src = src; }
   $("#v-open").href = src;
-  // Download whatever version is on screen. The content URL names it: /c/<id>/<version>/...
-  const m = new URL(src, location.href).pathname.match(/^\/c\/([\w-]+)\/(\d+)\//);
-  if (m) $("#v-download").href = `/api/artifacts/${m[1]}/versions/${m[2]}/download`;
+  $("#v-download").href = `/api/artifacts/${encodeURIComponent(id)}/versions/${version}/download`;
 }
 function renderVersionBar(a) {
   const bar = $("#v-version");
@@ -282,7 +280,7 @@ function viewVersion(n) {
   const v = state.versions?.find((x) => x.version === n);
   if (!a || !v) return;
   state.viewing = n === a.version ? null : n;
-  showContent(localPath(state.viewing ? v.content_url : a.content_url));
+  showContent(localPath(state.viewing ? v.content_url : a.content_url), a.id, state.viewing ?? a.version);
   renderVersionBar(a);
   renderHistory(a);
 }

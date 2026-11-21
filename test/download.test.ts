@@ -65,3 +65,10 @@ test("download needs an identity, and removed artifacts are gone", async () => {
   expect((await download("solo/download")).status).toBe(404);
   expect((await download("solo/versions/1/download")).status).toBe(404);
 });
+
+test("the zip writer refuses more entries than a zip without ZIP64 can count", async () => {
+  const { zipStream, ZIP_MAX_ENTRIES } = await import("../src/zip");
+  const entry = { path: "a", read: async () => new Uint8Array() };
+  expect(() => zipStream(Array(ZIP_MAX_ENTRIES + 1).fill(entry), new Date())).toThrow("at most 65535");
+  expect(() => zipStream(Array(ZIP_MAX_ENTRIES).fill(entry), new Date())).not.toThrow();
+});

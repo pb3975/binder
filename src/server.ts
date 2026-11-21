@@ -5,7 +5,7 @@ import { loadConfig, type Config } from "./config";
 import { loadSecret, signer } from "./content";
 import { openDb, sha256, versionDir, type Artifact, type ArtifactRow, type FileEntry, type Version } from "./db";
 import { thumbnailer } from "./thumbs";
-import { zip } from "./zip";
+import { ZIP_MAX_ENTRIES, zipStream } from "./zip";
 
 const MAX_BYTES = 64 * 1024 * 1024;
 const PUBLIC_DIR = join(import.meta.dir, "..", "public");
@@ -317,10 +317,9 @@ export function createApp(cfg: Config, opts: { now?: () => number } = {}) {
       const ext = f.path.match(/\.[A-Za-z0-9]{1,10}$/)?.[0] ?? "";
       return new Response(Bun.file(join(dir, f.path)), { headers: headers(`${name}${ext}`, f.type || "application/octet-stream") });
     }
-    const files = await Promise.all(
-      v.files.map(async (f) => ({ path: `${name}/${f.path}`, data: await Bun.file(join(dir, f.path)).bytes() })),
-    );
-    return new Response(zip(files, new Date(v.created_at)), { headers: headers(`${name}.zip`, "application/zip") });
+    if (v.files.length > ZIP_MAX_ENTRIES) return fail(422, `this version has more than ${ZIP_MAX_ENTRIES} files, too many for a zip`);
+    const entries = v.files.map((f) => ({ path: `${name}/${f.path}`, read: () => Bun.file(join(dir, f.path)).bytes() }));
+    return new Response(zipStream(entries, new Date(v.created_at)), { headers: headers(`${name}.zip`, "application/zip") });
   }
 
   /** Serves one file of one version. The token in the path is the only credential. */
