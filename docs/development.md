@@ -6,7 +6,7 @@
 - TypeScript 5.9 for type checks only (`devDependencies`).
 - Chromium for preview images. Locally the server uses `/usr/bin/chromium` if present; previews are skipped when it is missing.
 - Docker for the image (`oven/bun:1.4.2-alpine`; the `full` target adds Alpine `chromium`, the `slim` target does not).
-- [Litestream](https://litestream.io) 0.5.18 in both images, for S3 storage only. The Dockerfile pins the release and checks its sha256 per architecture. To upgrade, change `LITESTREAM_VERSION` and both sums from the release's `checksums.txt`.
+- [Litestream](https://litestream.io) in both images, for S3 storage only. The Dockerfile builds upstream commit `LITESTREAM_COMMIT` from source (Go 1.26.11, pinned by digest) and checks the binary's sha256 for each architecture. To change it, set the commit, build `--target litestream` for `linux/amd64` and `linux/arm64`, and copy the two new sums from the failed check. Once a release contains the fix for upstream issue 1580, go back to the release download.
 - MinIO for the S3 end-to-end test only (`bitnamilegacy/minio`, pinned by digest in `scripts/e2e-s3.sh`).
 
 ## Run locally

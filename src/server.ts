@@ -4,6 +4,7 @@ import { authenticator, SESSION_COOKIE, type Principal } from "./auth";
 import { loadConfig, type Config } from "./config";
 import { loadSecret, signer } from "./content";
 import { openDb, sha256, type Artifact, type ArtifactRow, type FileEntry, type Version } from "./db";
+import { litestream, retry, type Replication } from "./replication";
 import { openStorage, thumbKey, typeOf, versionKey, type NewFile, type Storage } from "./storage";
 import { thumbnailer } from "./thumbs";
 import { BUILD, VERSION } from "./version";
@@ -92,7 +93,7 @@ function httpUrl(s: unknown): string | null | undefined {
 }
 const fail = (status: number, error: string) => json({ error }, status);
 
-export function createApp(cfg: Config, opts: { now?: () => number; storage?: Storage } = {}) {
+export function createApp(cfg: Config, opts: { now?: () => number; storage?: Storage; replication?: Replication | null } = {}) {
   const now = opts.now ?? Date.now;
   const iso = () => new Date(now()).toISOString();
   for (const d of ["versions", "trash"]) mkdirSync(join(cfg.dataDir, d), { recursive: true });
@@ -100,6 +101,11 @@ export function createApp(cfg: Config, opts: { now?: () => number; storage?: Sto
   rmSync(join(cfg.dataDir, "tmp"), { recursive: true, force: true });
   mkdirSync(join(cfg.dataDir, "tmp"), { recursive: true });
   const storage = opts.storage ?? openStorage(cfg.storage, cfg.dataDir);
+  // With S3 storage, Litestream copies the database; a write is answered only once the copy is in S3.
+  const replication =
+    opts.replication !== undefined
+      ? opts.replication
+      : cfg.storage.kind === "s3" ? litestream(cfg.litestreamSocket!, join(cfg.dataDir, "binder.sqlite")) : null;
   const db = openDb(cfg.dataDir, { migrate: cfg.storage.kind === "local" });
   const sign = signer(cfg.secretKey ?? loadSecret(cfg.dataDir), now);
   const thumbs = thumbnailer({ db, storage, tmpDir: join(cfg.dataDir, "tmp"), signer: sign, chromium: cfg.chromium, hosts: cfg.previewHosts });
@@ -453,7 +459,31 @@ export function createApp(cfg: Config, opts: { now?: () => number; storage?: Sto
       "set-cookie": `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${secureCookie(req) ? "; Secure" : ""}`,
     });
 
+  /**
+   * Every API write is confirmed durable before it is answered: with S3 storage, the database copy must be
+   * in S3 first. Otherwise a task stop right after a 201 could lose the write (see src/replication.ts).
+   */
   async function fetch(req: Request, server?: { requestIP(r: Request): { address: string } | null }): Promise<Response> {
+    const res = await route(req, server);
+    const write = req.method !== "GET" && req.method !== "HEAD";
+    const path = new URL(req.url).pathname;
+    if (!replication || !write || res.status >= 400 || !path.startsWith("/api/") || path === "/api/session") return res;
+    try {
+      await replication.flush();
+      return res;
+    } catch (e) {
+      console.error(`write not confirmed in S3: ${(e as Error).message}`);
+      return fail(503, `the change is saved on this server, but copying it to S3 failed, so it may be lost if the server stops: ${(e as Error).message}`);
+    }
+  }
+
+  async function healthz(): Promise<Response> {
+    if (!replication) return json({ ok: true, version: VERSION, build: BUILD });
+    const h = await replication.health();
+    return json({ ok: h.ok, version: VERSION, build: BUILD, replication: h.detail }, h.ok ? 200 : 503);
+  }
+
+  async function route(req: Request, server?: { requestIP(r: Request): { address: string } | null }): Promise<Response> {
     const url = new URL(req.url);
     let path: string;
     try {
@@ -464,7 +494,7 @@ export function createApp(cfg: Config, opts: { now?: () => number; storage?: Sto
     const method = req.method;
     let m: RegExpMatchArray | null;
 
-    if (path === "/healthz") return json({ ok: true, version: VERSION, build: BUILD });
+    if (path === "/healthz") return healthz();
     if (path === "/llms.txt") return llmsTxt(req);
     if (method === "GET" || method === "HEAD") {
       // The UI shell is public. It holds no data, so a signed-out browser can show the sign-in screen.
@@ -537,7 +567,7 @@ export function createApp(cfg: Config, opts: { now?: () => number; storage?: Sto
     thumbs.start(loopbackOrigin);
   }
 
-  return { fetch, started, db, thumbs, storage };
+  return { fetch, started, db, thumbs, storage, replication };
 }
 
 if (import.meta.main) {
@@ -548,6 +578,9 @@ if (import.meta.main) {
     app = createApp(cfg);
     // Fail now, not on the first publish, when S3 cannot be reached with these settings.
     await app.storage.check();
+    // Litestream starts its control socket next to Binder. Wait for it, and for the database to be in S3
+    // (this also makes Litestream pick up a new, empty database at once instead of on its first tick).
+    if (app.replication) await retry(() => app.replication!.flush(), 30_000);
   } catch (e) {
     console.error(`binder: cannot start: ${(e as Error).message}`);
     process.exit(1);

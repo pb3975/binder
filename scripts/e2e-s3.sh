@@ -9,6 +9,7 @@
 #    the artifact, its history, and its files are all still there. Then write, and restore a second time.
 # 4. Wrong S3 credentials, or no BINDER_SECRET_KEY: the container stops instead of starting empty.
 # 5. No keys in the environment: Binder and Litestream both get credentials from a fake ECS endpoint.
+# 6. A write right after a fresh start, then an immediate stop: the write must survive (it once did not).
 # All keys here are fake and work only against this throwaway MinIO.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -21,9 +22,9 @@ docker build -q --target "$target" -t "$image" . >/dev/null
 
 cleanup() {
   if [ "${failed:-1}" != 0 ]; then
-    for c in a b c ecs ecs-helper; do docker logs "$name-$c" 2>&1 | tail -20 | sed "s/^/[$c] /" || true; done
+    for c in a b c ecs ecs-helper quick quick2; do docker logs "$name-$c" 2>&1 | tail -20 | sed "s/^/[$c] /" || true; done
   fi
-  docker rm -f -v "$name-minio" "$name-a" "$name-b" "$name-c" "$name-bad" "$name-ecs" "$name-ecs-helper" >/dev/null 2>&1 || true
+  docker rm -f -v "$name-minio" "$name-a" "$name-b" "$name-c" "$name-bad" "$name-ecs" "$name-ecs-helper" "$name-quick" "$name-quick2" >/dev/null 2>&1 || true
   docker network rm "$name" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -130,5 +131,26 @@ docker run --rm --network "$name" "${aws[@]}" "${keys[@]}" --entrypoint bun "$im
   const ok = (await s3.file('team-b/versions/ecs/1/index.html').exists()) && ((await s3.list({ prefix: 'team-b/db/' })).keyCount ?? 0) > 0;
   if (!ok) { console.error('FAIL task-role writes are not in the bucket'); process.exit(1); }
   console.log('ok   files and the database replica were written with task-role credentials');"
+
+# 6. Fresh prefix, fresh container. Token and publish as soon as it answers, then stop at once, before
+#    Litestream's first one-second tick. Binder answers a write only once S3 has it, so nothing is lost.
+quick=(-e BINDER_STORAGE=s3://binder-e2e/team-c -e BINDER_SECRET_KEY=ZmFrZS1lMmUtc2lnbmluZy1rZXktbm90LWEtc2VjcmV0ISE= "${aws[@]}" "${keys[@]}")
+docker run -d --name "$name-quick" --network "$name" -v "$PWD/test/e2e:/e2e:ro" "${quick[@]}" "$image" >/dev/null
+# One exec, polling every 50 ms, so the token and the publish land within Litestream's first second.
+t4=$(docker exec "$name-quick" sh -c '
+  until wget -qO- http://127.0.0.1:8480/healthz >/dev/null 2>&1; do sleep 0.05; done
+  t=$(binder token create --name quick) && T="$t" bun /e2e/quick-publish.ts && echo "$t"')
+docker stop -t 30 "$name-quick" >/dev/null && docker rm -v "$name-quick" >/dev/null
+docker run -d --name "$name-quick2" --network "$name" "${quick[@]}" "$image" >/dev/null
+wait_healthy "$name-quick2"
+docker exec -e T="$t4" "$name-quick2" bun -e "
+  const h = { authorization: 'Bearer ' + process.env.T };
+  const r = await fetch('http://127.0.0.1:8480/api/artifacts/quick', { headers: h });
+  const a = r.ok ? await r.json() : null;
+  const page = a && await (await fetch(a.content_url)).text();
+  if (page !== '<p>quick</p>') { console.error('FAIL a write right before an immediate stop was lost', r.status); process.exit(1); }
+  const health = await (await fetch('http://127.0.0.1:8480/healthz')).json();
+  if (!health.ok || typeof health.replication !== 'string') { console.error('FAIL /healthz does not report the copy', JSON.stringify(health)); process.exit(1); }
+  console.log('ok   a token and a publish right before an immediate stop survive; /healthz reports the copy');"
 failed=0
 echo "all S3 e2e checks passed"

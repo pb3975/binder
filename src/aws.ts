@@ -70,6 +70,9 @@ export function credentialProvider(env: Env, deps: Deps = {}): () => Promise<Cre
     const expiration = Expiration === undefined ? undefined : Date.parse(String(Expiration));
     if (expiration !== undefined && Number.isNaN(expiration))
       throw new Error(`container credentials endpoint answered a bad Expiration: ${String(Expiration)}`);
+    // Refused before they can replace the cache, so still-valid cached credentials stay in use.
+    if (expiration !== undefined && expiration <= now())
+      throw new Error(`container credentials endpoint answered credentials that expired at ${String(Expiration)}`);
     return {
       accessKeyId: AccessKeyId,
       secretAccessKey: SecretAccessKey,

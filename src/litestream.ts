@@ -12,6 +12,9 @@ export function litestreamConfig(cfg: Config) {
   if (cfg.storage.kind !== "s3") throw new Error("BINDER_STORAGE is not s3; Litestream is only used with S3 storage");
   const s = cfg.storage;
   return {
+    // Binder asks Litestream through this socket to copy each write to S3 before it answers (src/replication.ts).
+    // Only the user that runs Litestream (and Binder) may use it.
+    socket: { enabled: true, path: cfg.litestreamSocket, permissions: 0o600 },
     dbs: [
       {
         path: join(cfg.dataDir, "binder.sqlite"),

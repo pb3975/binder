@@ -24,6 +24,8 @@ export type Config = {
   storage: StorageConfig;
   /** The key that signs content URLs and sessions, from BINDER_SECRET_KEY. Null means data/secret.key. */
   secretKey: Buffer | null;
+  /** Litestream's control socket (BINDER_LITESTREAM_SOCKET). Used, and required, only with S3 storage. */
+  litestreamSocket: string | null;
 };
 
 /**
@@ -76,6 +78,10 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   // The task's disk is gone after every restart, so a generated key would end every session and link.
   if (storage.kind === "s3" && !secretKey)
     throw new Error("BINDER_STORAGE is s3, so BINDER_SECRET_KEY is required: base64 of at least 32 random bytes (openssl rand -base64 32)");
+  const litestreamSocket = env.BINDER_LITESTREAM_SOCKET?.trim() || null;
+  // Without Litestream the database would never reach S3, and the next start would lose it.
+  if (storage.kind === "s3" && !litestreamSocket)
+    throw new Error("BINDER_STORAGE is s3, so Binder must run under Litestream (the container image does this); BINDER_LITESTREAM_SOCKET is not set");
 
   return {
     dataDir: resolve(env.BINDER_DATA_DIR ?? env.DATA_DIR ?? "./data"),
@@ -90,6 +96,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     devAnonymous: env.BINDER_DEV_ANONYMOUS === "1",
     storage,
     secretKey,
+    litestreamSocket,
   };
 }
 
@@ -103,8 +110,9 @@ export function storageConfig(env: Record<string, string | undefined>): StorageC
   const prefix = m[2]!.replace(/\/+$/, "");
   // Bucket naming rules, and a conservative key prefix, so both are safe in the Litestream config too.
   if (!/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(bucket)) throw new Error(`BINDER_STORAGE: not an S3 bucket name: ${bucket}`);
-  if (prefix && !/^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*$/.test(prefix))
-    throw new Error(`BINDER_STORAGE: the prefix may use letters, digits, . _ - and single slashes: ${prefix}`);
+  // No "." or ".." segments: S3 keeps them literally, but a path library (Litestream's too) would fold them.
+  if (prefix && (!/^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*$/.test(prefix) || prefix.split("/").some((s) => s === "." || s === "..")))
+    throw new Error(`BINDER_STORAGE: the prefix may use letters, digits, . _ - and single slashes, with no . or .. parts: ${prefix}`);
   const region = env.AWS_REGION?.trim() || env.AWS_DEFAULT_REGION?.trim();
   if (!region || !/^[a-z0-9-]+$/.test(region)) throw new Error("BINDER_STORAGE is s3, so AWS_REGION (or AWS_DEFAULT_REGION) must name a region");
   const rawEndpoint = env.AWS_ENDPOINT_URL_S3?.trim() || env.AWS_ENDPOINT_URL?.trim() || null;

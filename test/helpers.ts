@@ -4,17 +4,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_PREVIEW_HOSTS, type Config } from "../src/config";
 import { createApp } from "../src/server";
+import type { Replication } from "../src/replication";
 import type { Storage } from "../src/storage";
 
-export function startBinder(over: Partial<Config> = {}, opts: { now?: () => number; dataDir?: string; storage?: Storage } = {}) {
+export function startBinder(over: Partial<Config> = {}, opts: { now?: () => number; dataDir?: string; storage?: Storage; replication?: Replication } = {}) {
   const dataDir = opts.dataDir ?? mkdtempSync(join(tmpdir(), "binder-test-"));
   const cfg: Config = {
     dataDir, host: "127.0.0.1", port: 0, publicUrl: null, chromium: null, previewHosts: DEFAULT_PREVIEW_HOSTS,
     // Default: Tailscale-style header mode, as on a tailnet behind `tailscale serve`.
     authHeader: "Tailscale-User-Login", allowedUsers: ["owner@example.com"], trustedProxies: ["127.0.0.1", "::1"],
-    devAnonymous: false, storage: { kind: "local" }, secretKey: null, ...over,
+    devAnonymous: false, storage: { kind: "local" }, secretKey: null, litestreamSocket: null, ...over,
   };
-  const app = createApp(cfg, { now: opts.now, storage: opts.storage });
+  const app = createApp(cfg, { now: opts.now, storage: opts.storage, replication: opts.replication });
   const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: app.fetch });
   const base = `http://127.0.0.1:${server.port}`;
   return {

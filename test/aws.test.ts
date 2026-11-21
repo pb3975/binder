@@ -14,7 +14,7 @@ const TTL = 15 * 60_000; // what the fake endpoint grants, like a short ECS role
 type Seen = { path: string; auth: string | null };
 const seen: Seen[] = [];
 let issued = 0;
-let answer: "ok" | "500" | "html" | "no-keys" = "ok";
+let answer: "ok" | "500" | "html" | "no-keys" | "expired" = "ok";
 const endpoint = Bun.serve({
   port: 0,
   hostname: "127.0.0.1",
@@ -23,6 +23,8 @@ const endpoint = Bun.serve({
     if (answer === "500") return new Response("boom", { status: 500 });
     if (answer === "html") return new Response("<html>", { headers: { "content-type": "text/html" } });
     if (answer === "no-keys") return Response.json({ Expiration: new Date(clock + TTL).toISOString() });
+    if (answer === "expired")
+      return Response.json({ AccessKeyId: "ASIA-FAKE-STALE", SecretAccessKey: "fake-stale", Token: "fake-stale", Expiration: new Date(clock - 1000).toISOString() });
     issued++;
     return Response.json({
       AccessKeyId: `ASIA-FAKE-${issued}`,
@@ -145,18 +147,23 @@ test("BINDER_STORAGE parses s3 URLs and the standard AWS settings", () => {
   expect(() => storageConfig({ BINDER_STORAGE: "gs://x/y", AWS_REGION: "us-east-1" })).toThrow(/local or s3/);
   expect(() => storageConfig({ BINDER_STORAGE: "s3://Bad_Bucket/x", AWS_REGION: "us-east-1" })).toThrow(/bucket/);
   expect(() => storageConfig({ BINDER_STORAGE: "s3://binder-data/a//b", AWS_REGION: "us-east-1" })).toThrow(/prefix/);
+  for (const bad of ["s3://binder-data//a", "s3://binder-data/a/../b", "s3://binder-data/./a", "s3://binder-data/a b", "s3://binder-data/a/.."])
+    expect(() => storageConfig({ BINDER_STORAGE: bad, AWS_REGION: "us-east-1" })).toThrow(/prefix/);
+  expect(storageConfig({ BINDER_STORAGE: "s3://binder-data/team.a/binder_1-x/", AWS_REGION: "us-east-1" })).toMatchObject({ prefix: "team.a/binder_1-x" });
   expect(() => storageConfig({ BINDER_STORAGE: "s3://binder-data/x", AWS_REGION: "us-east-1", AWS_ENDPOINT_URL: "ftp://x" })).toThrow(/http or https/);
 });
 
 test("S3 storage needs BINDER_SECRET_KEY, strict base64 of 32 bytes or more", async () => {
   const { loadConfig } = await import("../src/config");
-  const s3 = { BINDER_STORAGE: "s3://binder-data/x", AWS_REGION: "us-east-1" };
+  const s3 = { BINDER_STORAGE: "s3://binder-data/x", AWS_REGION: "us-east-1", BINDER_LITESTREAM_SOCKET: "/tmp/fake.sock" };
   const key = Buffer.alloc(32, 7).toString("base64");
   expect(() => loadConfig(s3)).toThrow(/BINDER_SECRET_KEY is required/);
   expect(loadConfig({ ...s3, BINDER_SECRET_KEY: key }).secretKey).toEqual(Buffer.alloc(32, 7));
   expect(() => loadConfig({ BINDER_SECRET_KEY: Buffer.alloc(16).toString("base64") })).toThrow(/at least 32 bytes/);
   expect(() => loadConfig({ BINDER_SECRET_KEY: `${key}!` })).toThrow(/must be base64/);
   expect(loadConfig({}).secretKey).toBeNull(); // local storage keeps using data/secret.key
+  // S3 storage without Litestream would never copy the database to S3.
+  expect(() => loadConfig({ ...s3, BINDER_SECRET_KEY: key, BINDER_LITESTREAM_SOCKET: undefined })).toThrow(/run under Litestream/);
 });
 
 test("the S3 client is replaced when the credentials refresh, and reused until then", async () => {
@@ -184,4 +191,15 @@ test("AWS gets virtual-hosted addresses; a custom endpoint or a dotted bucket na
   expect(await url("binder-data", null)).toBe("https://binder-data.s3.eu-west-2.amazonaws.com/p/k");
   expect(await url("binder.data", null)).toBe("https://s3.eu-west-2.amazonaws.com/binder.data/p/k");
   expect(await url("binder-data", "http://minio:9000")).toBe("http://minio:9000/binder-data/p/k");
+});
+
+test("an early refresh that answers already-expired credentials keeps the cached ones", async () => {
+  reset();
+  const get = credentialProvider({ AWS_CONTAINER_CREDENTIALS_FULL_URI: FULL }, { now });
+  const first = await get();
+  answer = "expired";
+  clock += TTL - 60_000; // inside the refresh window; the cached credentials still work
+  expect(await get()).toBe(first);
+  // With nothing valid cached, expired credentials are an error, never used.
+  await expect(credentialProvider({ AWS_CONTAINER_CREDENTIALS_FULL_URI: FULL }, { now })()).rejects.toThrow(/expired/);
 });

@@ -196,3 +196,32 @@ for (const backend of backends) {
     });
   });
 }
+
+// Two Binders on one prefix (a second stack, a task started by hand). Both see version 1 as free; the
+// second one's uploads must fail and leave the first one's files alone. S3 only: it needs If-None-Match.
+describe.skipIf(!S3)("s3 storage with a second writer on the same prefix", () => {
+  test("version files are create-only, so the second writer fails loudly and overwrites nothing", async () => {
+    const base = storageConfig({ ...process.env, BINDER_STORAGE: S3 });
+    if (base.kind !== "s3") throw new Error("BINDER_TEST_S3 must be an s3:// URL");
+    const cfg = { ...base, prefix: [base.prefix, `t-${crypto.randomUUID()}`].filter(Boolean).join("/") };
+    const real = credentialProvider(process.env);
+    const first = s3Storage(cfg, real);
+    // The second writer checks that version 1 is free (call 1), then waits until the first writer
+    // has stored version 1 before it uploads: the race, made certain.
+    let firstDone!: () => void;
+    const firstStored = new Promise<void>((r) => (firstDone = r));
+    let calls = 0;
+    const second = s3Storage(cfg, async () => {
+      if (++calls > 1) await firstStored;
+      return real();
+    });
+    const files = (who: string) => ["index.html", "a.css", "b.js"].map((p) => ({ path: p, data: bytes(`${who}:${p}`) }));
+
+    const secondRun = second.addVersion("doc", files("second"), ledger());
+    await new Promise((r) => setTimeout(r, 50)); // let the second writer pass its free-number check
+    expect(await first.addVersion("doc", files("first"), ledger())).toBe(1);
+    firstDone();
+    await expect(secondRun).rejects.toThrow(/another Binder is writing to this prefix/);
+    for (const f of files("first")) expect(await (await first.read(versionKey("doc", 1, f.path)))!.text()).toBe(`first:${f.path}`);
+  });
+});

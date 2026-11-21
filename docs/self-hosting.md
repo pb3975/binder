@@ -85,13 +85,23 @@ docker run -d --name binder -p 127.0.0.1:8480:8480 \
 
 **Rules and limits:**
 
-- **One writer.** Only one Binder may use a bucket prefix at a time. Run one task, never two, and give each Binder instance its own prefix. Two Binders on one prefix would overwrite each other's database copy.
-- **The loss window.** Litestream copies changes about once a second. If the task crashes or is killed (not a normal stop), the last second or so of database writes can be lost. A normal stop (SIGTERM, as ECS sends) is safe: Litestream stops Binder, then makes a last copy. Files of a version that was lost this way stay in S3 under their own number, and the next publish takes the next free number.
+- **One Binder task per prefix.** Only one Binder may use a bucket prefix at a time. Run one task, never two (set the ECS service's desired count to 1, and its deployment to stop the old task before it starts the new one), and give each Binder instance its own prefix. Two Binders on one prefix would overwrite each other's database copy. Binder writes version files with a conditional PUT (`If-None-Match: *`), so a second writer that reaches a file first makes the other one's publish fail with "another Binder is writing to this prefix", instead of overwriting it. That is a tripwire, not a lock: it does not protect the database copy.
+- **What a crash can lose (the recovery point).** Every API write (publish, edit, remove, restore) and every `binder token` change is answered only after Litestream confirms that S3 has it. If that copy fails, the write answers `503` and says so. So a crash, a kill, or a lost task loses no write that was answered with success. Two kinds of background writes are not confirmed: a token's "last used" time and the "has a preview" flag. A crash can lose the last second or so of those. A lost preview flag only means the preview renders again.
+- **Health.** `/healthz` answers `503` when Litestream cannot be reached, or when S3 has been behind the local database for more than 60 seconds (for example, when writes to `<prefix>/db/` fail). Point the load balancer or ECS health check at it. Its `replication` field says how far the copy is.
 - **A failed restore stops the container.** If the bucket, region, endpoint, or credentials are wrong, the container exits with an error. It never starts with an empty database, except on the first start, when there is no copy in S3 yet.
 - **Binder serves every file itself.** It reads from S3 and adds the same sandbox headers as with local storage. It never redirects a browser to S3.
 - **Schema v1 data** must be upgraded with local storage first. S3 storage starts at schema v2.
 
-**Backup:** turn on S3 versioning for the bucket, and a lifecycle rule that expires old object versions after a period you choose. Versioning keeps overwritten and deleted objects, including old copies of the database. Litestream also keeps its own snapshots of the database under `<prefix>/db/` (24 hours by default).
+**Backup.** Turn on S3 versioning for the bucket, and a lifecycle rule that expires old object versions after a period you choose. Versioning keeps overwritten and deleted objects, including old copies of the database. Litestream also keeps its own snapshots of the database under `<prefix>/db/` (24 hours by default).
+
+For a copy in another bucket or account, do not copy `<prefix>/db/` while Binder runs. Litestream compacts and deletes files there all the time, so a live `aws s3 sync` can copy a set of files that does not restore. Version files never change after a publish, so `<prefix>/versions/` is safe to copy at any time.
+
+1. Stop Binder (set the service's desired count to 0) and wait for the task to stop. A normal stop makes a last copy to S3.
+2. Copy the prefix: `aws s3 sync s3://<bucket>/<prefix> s3://<backup-bucket>/<prefix>`.
+3. Start Binder again.
+4. Check that the copy restores: `litestream restore -integrity-check full -o /tmp/check.sqlite s3://<backup-bucket>/<prefix>/db`. A backup is good only once a restore of it has passed this check.
+
+To back up without stopping Binder, export the database instead of copying `<prefix>/db/`. Run `litestream restore -integrity-check full -o binder.sqlite s3://<bucket>/<prefix>/db`, which writes one consistent SQLite file, and copy `<prefix>/versions/` next to it.
 
 ## Backup and upgrades
 

@@ -3,7 +3,9 @@
 import { newToken } from "./auth";
 import { loadConfig } from "./config";
 import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { openDb } from "./db";
+import { litestream } from "./replication";
 
 const USAGE = `usage:
   binder token create --name <name> [--scope write|read]   print a new token (shown once)
@@ -57,4 +59,27 @@ export function run(argv: string[], env: Record<string, string | undefined> = pr
   }
 }
 
-if (import.meta.main) process.exit(run(process.argv.slice(2)));
+/**
+ * With S3 storage, waits until Litestream has copied a token change to S3, so the token survives a
+ * task stop right after this command (see src/replication.ts). Returns the exit code.
+ */
+export async function confirmCopied(argv: string[], env: Record<string, string | undefined>, code: number): Promise<number> {
+  if (code !== 0 || !env.BINDER_STORAGE?.startsWith("s3://") || !["create", "revoke"].includes(argv[1] ?? "")) return code;
+  if (!env.BINDER_LITESTREAM_SOCKET) {
+    console.error("binder: BINDER_STORAGE is s3 but BINDER_LITESTREAM_SOCKET is not set, so this change was not copied to S3");
+    return 1;
+  }
+  const dbPath = join(loadConfig({ BINDER_DATA_DIR: env.BINDER_DATA_DIR, DATA_DIR: env.DATA_DIR }).dataDir, "binder.sqlite");
+  try {
+    await litestream(env.BINDER_LITESTREAM_SOCKET, dbPath).flush();
+    return 0;
+  } catch (e) {
+    console.error(`binder: the change is saved here but was not copied to S3, so it may be lost if the server stops: ${(e as Error).message}`);
+    return 1;
+  }
+}
+
+if (import.meta.main) {
+  const argv = process.argv.slice(2);
+  process.exit(await confirmCopied(argv, process.env, run(argv)));
+}

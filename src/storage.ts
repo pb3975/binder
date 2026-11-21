@@ -92,6 +92,19 @@ export function s3Storage(cfg: Extract<StorageConfig, { kind: "s3" }>, credentia
   const put = async (key: string, data: Blob | Uint8Array) => {
     await (await client()).write(full(key), data, { type: typeOf(key) || "application/octet-stream" });
   };
+  /**
+   * Writes a key only if it does not exist yet (a conditional PUT with If-None-Match: *). Version files
+   * are written this way, so a second Binder on the same prefix fails loudly instead of overwriting them.
+   * Bun.S3Client cannot send that header, so this signs a short-lived URL and sends the PUT itself.
+   */
+  const putNew = async (key: string, data: Blob | Uint8Array) => {
+    const type = typeOf(key) || "application/octet-stream";
+    const url = (await client()).presign(full(key), { method: "PUT", expiresIn: 300 });
+    const r = await fetch(url, { method: "PUT", body: data as BodyInit, headers: { "if-none-match": "*", "content-type": type } });
+    if (r.status === 412 || r.status === 409)
+      throw new Error(`${full(key)} already exists: another Binder is writing to this prefix. Run one Binder per prefix.`);
+    if (!r.ok) throw new Error(`S3 PUT ${full(key)} answered ${r.status}: ${(await r.text()).slice(0, 200)}`);
+  };
 
   return {
     location: `s3://${cfg.bucket}/${cfg.prefix}`,
@@ -122,7 +135,7 @@ export function s3Storage(cfg: Extract<StorageConfig, { kind: "s3" }>, credentia
         const batch = await Promise.allSettled(
           files.slice(i, i + UPLOADS_AT_ONCE).map(async (f) => {
             const key = versionKey(id, n, f.path);
-            await put(key, f.data);
+            await putNew(key, f.data);
             done.push(key);
           }),
         );
