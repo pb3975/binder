@@ -9,7 +9,9 @@ afterAll(() => b.stop());
 test("rejects requests without an allowed Tailscale login", async () => {
   expect((await fetch(`${b.base}/api/artifacts`)).status).toBe(401);
   expect((await fetch(`${b.base}/api/artifacts`, { headers: { "tailscale-user-login": "stranger@example.com" } })).status).toBe(403);
-  expect((await fetch(`${b.base}/healthz`)).status).toBe(200);
+  const h = await fetch(`${b.base}/healthz`);
+  expect(h.status).toBe(200);
+  expect(await h.json()).toEqual({ ok: true, version: (await import("../package.json")).version, build: null });
 });
 
 test("rejects writes without the X-Binder header (artifact pages cannot write)", async () => {

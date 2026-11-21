@@ -17,6 +17,7 @@ Thanks for helping. Binder is deliberately small, so the bar for new features is
    - `test/e2e/` for anything a browser or the container must prove (`scripts/e2e.sh`).
 5. Run `bun run check` and `scripts/e2e.sh`. CI runs both, plus the `slim` image.
 6. For UI changes, attach before and after screenshots (`SHOTS=/tmp/shots scripts/e2e.sh` saves some).
+7. If people who run Binder would notice the change, add a line under `## [Unreleased]` in [CHANGELOG.md](CHANGELOG.md).
 
 ## Rules that keep Binder safe
 

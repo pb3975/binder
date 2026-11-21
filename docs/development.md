@@ -28,7 +28,7 @@ TARGET=slim scripts/e2e.sh       # the same for the image without Chromium
 SHOTS=/tmp/shots scripts/e2e.sh  # also saves UI screenshots
 ```
 
-CI runs all three, plus an arm64 build once the repo is public (`.github/workflows/ci.yml`). Pushing a `v*` tag publishes multi-arch images to GHCR (`.github/workflows/release.yml`). The e2e run checks publish, view, and history, and two security properties in a real browser: previews cannot reach internal http services, and an artifact in the viewer cannot read or change Binder.
+CI runs all three, plus an arm64 build once the repo is public (`.github/workflows/ci.yml`). Pushing a `v*` tag publishes a release; see [releasing.md](releasing.md). The e2e run checks publish, view, and history, and two security properties in a real browser: previews cannot reach internal http services, and an artifact in the viewer cannot read or change Binder.
 
 ## Deploy over SSH (maintainers)
 
