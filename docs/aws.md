@@ -4,6 +4,8 @@ This quick start takes a team from an empty AWS account to a private Binder. One
 
 **Deployed in CI: no.** CI checks the stack with unit tests, `cdk synth`, and `cfn-lint`, but it has not yet deployed it to a real account. Please report anything that needs changing.
 
+**Needs Binder 0.2.0, which is not released yet.** S3 storage, `auth=oidc`, and `auth=none` arrive in 0.2.0, so this guide has no working path until that release is out. The stack refuses any image tag older than 0.2.0 at synth.
+
 ## What you get
 
 - One Binder task on ECS Fargate (arm64, Graviton). The task has no persistent disk. Binder keeps its SQLite database on the task's own storage, and Litestream copies every change to S3. At start, the container restores the database from S3.
@@ -27,11 +29,11 @@ Binder supports one writer only. The service never runs two tasks, even during a
 
 ## Deploy with tokens (the default)
 
-1. Get the code at a release, and install the CDK:
+1. After the 0.2.0 release, get the code at a release tag, and install the CDK:
 
    ```sh
    git clone https://github.com/pb3975/binder && cd binder
-   git checkout v0.2.0                 # a release with S3 storage and arm64 images
+   git checkout v0.2.0                 # or a later release; the tag exists once 0.2.0 is out
    cd deploy/aws
    bun install --frozen-lockfile
    ```
@@ -159,9 +161,34 @@ There is no NAT gateway, which saves about 32 USD a month. The task's public IPv
 
 ## Backups
 
-- S3 versioning keeps every overwritten or deleted object for 30 days.
-- Litestream copies database changes to S3 about once a second. If the task stops suddenly, you can lose about the last second of writes. On a normal stop, the task has 30 seconds to copy its last writes.
-- Artifact files are written once and never change, so the bucket is the whole backup. To keep a copy outside AWS, sync the bucket, for example with `aws s3 sync s3://<bucket> ./binder-backup`.
+The bucket holds everything: artifact files and the Litestream copy of the database under `<prefix>/db`. Litestream copies database changes to S3 about once a second. If the task stops suddenly, you can lose about the last second of writes. On a normal stop, the task has 30 seconds to copy its last writes.
+
+**S3 versioning is the first safety net.** For 30 days, an overwritten or deleted object keeps its old version in the bucket. You can recover from a bad write or a deletion without a separate copy.
+
+**To keep a copy outside the bucket, stop Binder first.** Do not copy the bucket while Binder runs. Litestream compacts and deletes its own files while it works, so a live copy can miss files that a restore needs.
+
+1. Stop the task, and wait until it has stopped. The stop makes Litestream copy its last writes:
+
+   ```sh
+   aws ecs update-service --cluster <cluster> --service <service> --desired-count 0
+   aws ecs wait services-stable --cluster <cluster> --services <service>
+   ```
+
+2. Copy the prefix:
+
+   ```sh
+   aws s3 sync s3://<bucket>/binder ./binder-backup/binder
+   ```
+
+3. Start Binder again. Do not count on `cdk deploy` for this: it changes only what changed in the template.
+
+   ```sh
+   aws ecs update-service --cluster <cluster> --service <service> --desired-count 1
+   ```
+
+4. Check that the copy restores. Upload it to an empty scratch bucket. Then start Binder on that bucket, for example with this stack in another account or region and `-c bucketName=<scratch bucket>`. Open it, and check that your newest artifacts are there. A copy that you have never restored is not yet a backup.
+
+Binder is down from step 1 to step 3, usually a few minutes. The cluster and service names are in the stack outputs.
 
 ## Upgrades
 

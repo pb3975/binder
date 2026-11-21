@@ -56,6 +56,12 @@ describe("parseConfig", () => {
     expect(parse({ storagePrefix: "/teams/a/" }).storagePrefix).toBe("teams/a");
   });
 
+  test("storage prefix follows Binder's own BINDER_STORAGE rule, so a deploy never fails at startup", () => {
+    expect(parse({ storagePrefix: "team.a/binder_1-x" }).storagePrefix).toBe("team.a/binder_1-x");
+    for (const bad of ["team//binder", "team binder", "team/bin*der", "équipe", "/"])
+      expect(() => parse({ storagePrefix: bad })).toThrow(/storagePrefix/);
+  });
+
   test("an image without S3 storage is refused, so a task restart cannot lose data", () => {
     const tag = (imageTag: string) => parseConfig({}, { imageTag });
     expect(() => tag("0.1.0")).toThrow(/no S3 storage/);
