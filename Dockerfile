@@ -11,6 +11,7 @@ ENV NODE_ENV=production BINDER_DATA_DIR=/data HOST=0.0.0.0 PORT=8480 TMPDIR=/tmp
     HOME=/tmp XDG_CONFIG_HOME=/tmp/.config XDG_CACHE_HOME=/tmp/.cache
 COPY src ./src
 COPY public ./public
+COPY skill/binder/SKILL.md ./skill/binder/SKILL.md
 COPY docker/entrypoint.sh /usr/local/bin/binder-entrypoint
 COPY docker/binder /usr/local/bin/binder
 ARG BINDER_BUILD=

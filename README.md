@@ -8,7 +8,7 @@ Agents make a lot of things that are not code: interactive explainers, diagrams,
 
 ## What it does
 
-- **One request to publish.** Any agent that can run `curl` can publish. No SDK, no MCP server, no install on the agent's machine. A drop-in [agent skill](skill/binder/SKILL.md) tells agents how.
+- **One request to publish.** Any agent that can run `curl` can publish. No SDK, no MCP server, no install on the agent's machine. A drop-in [agent skill](skill/binder/SKILL.md) tells agents how, and every Binder serves the same steps at `/llms.txt`.
 - **Every version kept.** Publishing the same `id` again makes a new version. The history shows who published each one, when, their note, and which files changed. Open any old version, restore it, or download it (one file as itself, several files as a zip).
 - **Find things again.** Group by project, domain, kind, date, or title. Filter, search, and share a filtered view as a link.
 - **Untrusted HTML stays in its box.** Every page runs in a sandboxed, opaque origin. It cannot read Binder, your session, or other pages, and it cannot publish or delete anything.
@@ -36,7 +36,7 @@ curl -fsS "$BINDER_URL/api/artifacts" -H 'X-Binder: 1' -H "Authorization: Bearer
   -F 'file=@hello.html'
 ```
 
-Run the same command again with new content and a new `note` to see version history. To give an agent the same ability, copy [`skill/binder/`](skill/binder/) into its skills folder and set `BINDER_URL` and `BINDER_TOKEN` in its environment.
+Run the same command again with new content and a new `note` to see version history. To give an agent the same ability, copy [`skill/binder/`](skill/binder/) into its skills folder and set `BINDER_URL` and `BINDER_TOKEN` in its environment. Or tell an agent to read `http://localhost:8480/llms.txt`.
 
 ## Run it for a team
 
@@ -57,7 +57,7 @@ Everything is in [docs/self-hosting.md](docs/self-hosting.md).
 
 The response includes `url` (the viewer link), `version`, and `content_url` (a signed link to this version's files).
 
-Other routes: `GET /api/artifacts`, `GET|PATCH|DELETE /api/artifacts/:id`, `GET /api/artifacts/:id/versions`, `POST /api/artifacts/:id/versions/:n/restore`, `GET /api/artifacts/:id[/versions/:n]/download`, `POST /api/artifacts/:id/thumbnail`, `GET|POST|DELETE /api/session`, `GET /c/...` (signed content), `GET /raw/:id/<path>` (redirects to signed content), `GET /thumb/:id.png`, `GET /healthz`.
+Other routes: `GET /api/artifacts`, `GET|PATCH|DELETE /api/artifacts/:id`, `GET /api/artifacts/:id/versions`, `POST /api/artifacts/:id/versions/:n/restore`, `GET /api/artifacts/:id[/versions/:n]/download`, `POST /api/artifacts/:id/thumbnail`, `GET|POST|DELETE /api/session`, `GET /c/...` (signed content), `GET /raw/:id/<path>` (redirects to signed content), `GET /thumb/:id.png`, `GET /healthz`, `GET /llms.txt` (these publish instructions for agents, with the instance's URL filled in).
 
 This is API v1. Changes inside v1 are additive only.
 

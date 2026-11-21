@@ -34,3 +34,22 @@ test("the example meta.json publishes as written", async () => {
   expect(r.status).toBe(201);
   expect(await r.json()).toMatchObject({ id: meta.id, version: 1, note: meta.note, published_by: "agent" });
 });
+
+test("/llms.txt serves the skill to any agent, with this instance's URL and auth", async () => {
+  const r = await fetch(`${b.base}/llms.txt`); // no credential: it holds nothing secret
+  expect(r.status).toBe(200);
+  expect(r.headers.get("content-type")).toBe("text/markdown; charset=utf-8");
+  const text = await r.text();
+  expect(text.startsWith(`# Binder\n\n> A self-hosted library of agent-built pages, at ${b.base}. This instance needs a token`)).toBe(true);
+  expect(text).toContain(`Set \`BINDER_URL=${b.base}\``);
+  expect(text).not.toContain("name: binder"); // frontmatter stripped
+  expect(text).toContain(`"$BINDER_URL/api/artifacts"`); // the same publish steps as the skill
+  expect(text.match(/^# /gm)?.length).toBe(1); // one title, as llms.txt expects
+
+  const open = startBinder({ authHeader: null, allowedUsers: [], devAnonymous: true });
+  try {
+    expect(await (await fetch(`${open.base}/llms.txt`)).text()).toContain("authentication off. No token is needed.");
+  } finally {
+    open.stop();
+  }
+});

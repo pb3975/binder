@@ -32,6 +32,7 @@ const { networkInterfaces } = await import("node:os");
 const ownIp = Object.values(networkInterfaces()).flat().find((i) => i && i.family === "IPv4" && !i.internal)?.address ?? "127.0.0.1";
 const T = (host: string) => `https://${host}:${tcp.port}`;
 if (process.env.BINDER_TOKEN) {
+  check("the image serves /llms.txt from the bundled skill", (await (await fetch(`${BINDER}/llms.txt`)).text()).includes("/api/artifacts"));
   check("anonymous API request is refused", (await fetch(`${BINDER}/api/artifacts`)).status === 401);
   const who = await (await fetch(`${BINDER}/api/session`, { headers: auth })).json();
   check("the CLI-made token works", who.name === "e2e" && who.scope === "write", JSON.stringify(who));
