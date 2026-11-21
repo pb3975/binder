@@ -225,7 +225,8 @@ describe("refused sign-ins", () => {
   });
 
   test("a next that leaves Binder becomes /", async () => {
-    for (const next of ["//evil.example/x", "/\\evil.example/x", "/\t/evil.example/x", "/\n/evil.example/x", "https://evil.example/x", "evil"]) {
+    for (const next of ["//evil.example/x", "/\\evil.example/x", "/\t/evil.example/x", "/\n/evil.example/x", "https://evil.example/x", "evil",
+      "/a/..//evil.example/x", "/a/%2e%2e//evil.example/x", "/a/b/../..//evil.example/x", "/a/..\\/evil.example/x"]) {
       const l = await begin(next);
       expect(outcome(await finish(l, await idp.sign(claimsFor(l))))).toBe("/");
     }

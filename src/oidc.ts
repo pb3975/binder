@@ -41,13 +41,16 @@ const formEncode = (s: string) => encodeURIComponent(s).replace(/%20/g, "+");
 
 /**
  * `next` must stay on Binder. Parsing (not only a prefix check) catches tricks such as
- * "/\t/evil.example", which a browser reads as "//evil.example".
+ * "/\t/evil.example", which a browser reads as "//evil.example", and "/a/..//evil.example".
  */
 export function localPath(raw: string | null, origin: string): string {
   if (!raw || !raw.startsWith("/") || raw.startsWith("//") || raw.startsWith("/\\")) return "/";
   try {
     const u = new URL(raw, origin);
-    return u.origin === origin ? u.pathname + u.search + u.hash : "/";
+    // Dot segments can collapse "/a/..//evil.example" into "//evil.example", which a browser
+    // reads as another host. Check the path after parsing, not only the raw input.
+    if (u.origin !== origin || u.pathname.startsWith("//")) return "/";
+    return u.pathname + u.search + u.hash;
   } catch {
     return "/";
   }
