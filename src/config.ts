@@ -12,14 +12,45 @@ export type Config = {
   chromium: string | null;
   /** The only external hosts a page may load from while its preview renders (https only). */
   previewHosts: string[];
-  /** Trusted proxy header that names the user, such as Tailscale-User-Login. Null turns header auth off. */
-  authHeader: string | null;
+  /** How Binder knows who a person is. Bearer tokens work in every mode. */
+  auth: AuthConfig;
+};
+
+/**
+ * token:  people paste a token once; Binder keeps a session cookie.
+ * none:   everyone without a token is the anonymous writer, on loopback (or BINDER_PUBLIC_URL's host) only.
+ * header: a trusted proxy names the user in a header.
+ * oidc:   people sign in with an OpenID Connect provider.
+ */
+export type AuthConfig = { mode: "token" } | { mode: "none" } | HeaderAuth | OidcAuth;
+export type AuthMode = AuthConfig["mode"];
+export type HeaderAuth = {
+  mode: "header";
+  /** Request header that names the user, such as Tailscale-User-Login. */
+  header: string;
   /** Logins the header may name: exact, `*@domain`, or `*`. */
   allowedUsers: string[];
   /** Peer addresses (IPs or IPv4 CIDRs) the header is accepted from. */
   trustedProxies: string[];
-  /** Local development only: every request is the anonymous writer. */
-  devAnonymous: boolean;
+};
+export type OidcAuth = {
+  mode: "oidc";
+  /** Compared exactly with the discovered and the ID token's `iss`. */
+  issuer: string;
+  clientId: string;
+  /** Null makes Binder a public client (PKCE only). */
+  clientSecret: string | null;
+  scopes: string;
+  /** Text on the sign-in button. */
+  label: string;
+  /** Emails that may sign in: exact, `*@domain`, or `*`. */
+  allowedUsers: string[];
+  /** Members of any of these groups may sign in. */
+  allowedGroups: string[];
+  /** ID token claim that lists the user's groups. */
+  groupsClaim: string;
+  /** `${BINDER_PUBLIC_URL}/auth/callback`. */
+  redirectUri: string;
 };
 
 /** Public CDNs that agent-built pages commonly load scripts, styles, and fonts from. */
@@ -29,6 +60,10 @@ export const DEFAULT_PREVIEW_HOSTS = [
 ];
 
 const list = (s: string | undefined) => (s ?? "").split(",").map((x) => x.trim()).filter(Boolean);
+const AUTH_MODES: AuthMode[] = ["token", "none", "header", "oidc"];
+
+/** The data folder alone, for the admin CLI, which must work whatever the auth settings are. */
+export const dataDirOf = (env: Record<string, string | undefined>) => resolve(env.BINDER_DATA_DIR ?? env.DATA_DIR ?? "./data");
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
   const previews = (env.BINDER_PREVIEWS ?? "auto").toLowerCase();
@@ -50,26 +85,68 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   if (env.ALLOWED_LOGINS || env.DEV_ALLOW_ANONYMOUS)
     throw new Error(
       "ALLOWED_LOGINS and DEV_ALLOW_ANONYMOUS were renamed. Use BINDER_AUTH_HEADER=Tailscale-User-Login with " +
-        "BINDER_ALLOWED_USERS, or BINDER_DEV_ANONYMOUS=1. See docs/self-hosting.md.",
+        "BINDER_ALLOWED_USERS, or BINDER_AUTH=none. See docs/self-hosting.md.",
     );
-  const authHeader = env.BINDER_AUTH_HEADER?.trim() || null;
-  const allowedUsers = list(env.BINDER_ALLOWED_USERS).map((u) => u.toLowerCase());
-  if (authHeader && !allowedUsers.length)
-    throw new Error("BINDER_AUTH_HEADER is set, so BINDER_ALLOWED_USERS must list who may sign in (logins, *@domain, or *)");
+  if (env.BINDER_DEV_ANONYMOUS !== undefined)
+    throw new Error("BINDER_DEV_ANONYMOUS was replaced by BINDER_AUTH=none. See docs/self-hosting.md.");
   const trustedProxies = env.BINDER_TRUSTED_PROXIES ? list(env.BINDER_TRUSTED_PROXIES) : ["127.0.0.1", "::1"];
   for (const p of trustedProxies) if (!parseAddress(p)) throw new Error(`BINDER_TRUSTED_PROXIES: not an IP or IPv4 CIDR: ${p}`);
 
   return {
-    dataDir: resolve(env.BINDER_DATA_DIR ?? env.DATA_DIR ?? "./data"),
+    dataDir: dataDirOf(env),
     host: env.HOST ?? "127.0.0.1",
     port,
     publicUrl,
     chromium,
     previewHosts,
-    authHeader,
+    auth: loadAuth(env, publicUrl, trustedProxies),
+  };
+}
+
+function loadAuth(env: Record<string, string | undefined>, publicUrl: string | null, trustedProxies: string[]): AuthConfig {
+  const header = env.BINDER_AUTH_HEADER?.trim() || null;
+  // Deployments from before BINDER_AUTH set only BINDER_AUTH_HEADER.
+  const mode = (env.BINDER_AUTH?.trim().toLowerCase() || (header ? "header" : "token")) as AuthMode;
+  if (!AUTH_MODES.includes(mode)) throw new Error(`BINDER_AUTH must be one of ${AUTH_MODES.join(", ")}, not ${env.BINDER_AUTH}`);
+  if (header && mode !== "header")
+    throw new Error(`BINDER_AUTH_HEADER is set but BINDER_AUTH=${mode}. Set BINDER_AUTH=header, or unset BINDER_AUTH_HEADER.`);
+  const allowedUsers = list(env.BINDER_ALLOWED_USERS).map((u) => u.toLowerCase());
+
+  if (mode === "token" || mode === "none") return { mode };
+  if (mode === "header") {
+    if (!header) throw new Error("BINDER_AUTH=header needs BINDER_AUTH_HEADER, such as Tailscale-User-Login");
+    if (!allowedUsers.length)
+      throw new Error("BINDER_AUTH_HEADER is set, so BINDER_ALLOWED_USERS must list who may sign in (logins, *@domain, or *)");
+    return { mode, header, allowedUsers, trustedProxies };
+  }
+
+  const missing = ["BINDER_OIDC_ISSUER", "BINDER_OIDC_CLIENT_ID", "BINDER_PUBLIC_URL"].filter((k) => !env[k]?.trim());
+  if (missing.length || !publicUrl) throw new Error(`BINDER_AUTH=oidc needs ${missing.join(", ")}. See docs/self-hosting.md.`);
+  const issuer = env.BINDER_OIDC_ISSUER!.trim();
+  let issuerUrl: URL;
+  try {
+    issuerUrl = new URL(issuer);
+  } catch {
+    throw new Error(`BINDER_OIDC_ISSUER is not a URL: ${issuer}`);
+  }
+  if (issuerUrl.protocol !== "https:" && issuerUrl.protocol !== "http:") throw new Error("BINDER_OIDC_ISSUER must be an https URL");
+  const allowedGroups = list(env.BINDER_ALLOWED_GROUPS);
+  if (!allowedUsers.length && !allowedGroups.length)
+    throw new Error("BINDER_AUTH=oidc needs BINDER_ALLOWED_USERS (emails, *@domain, or *) or BINDER_ALLOWED_GROUPS, or both");
+  const scopes = (env.BINDER_OIDC_SCOPES?.trim() || "openid email profile").split(/\s+/);
+  if (!scopes.includes("openid")) throw new Error("BINDER_OIDC_SCOPES must include openid");
+  return {
+    mode,
+    issuer,
+    clientId: env.BINDER_OIDC_CLIENT_ID!.trim(),
+    clientSecret: env.BINDER_OIDC_CLIENT_SECRET?.trim() || null,
+    scopes: scopes.join(" "),
+    label: env.BINDER_OIDC_LABEL?.trim() || "Sign in with SSO",
     allowedUsers,
-    trustedProxies,
-    devAnonymous: env.BINDER_DEV_ANONYMOUS === "1",
+    allowedGroups,
+    groupsClaim: env.BINDER_OIDC_GROUPS_CLAIM?.trim() || "groups",
+    // Built from configuration only, never from a request's Host header.
+    redirectUri: `${publicUrl}/auth/callback`,
   };
 }
 
