@@ -1,0 +1,19 @@
+# Binder with Docker Compose. Quick start:
+#   docker compose up -d
+#   docker compose exec binder binder token create --name you
+#   open http://localhost:8480 and paste the token
+services:
+  binder:
+    build:
+      context: .
+      target: slim                # "full" adds Chromium previews; see docs/self-hosting.md, "Images"
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8480:8480"     # localhost only; put a TLS proxy or Tailscale in front to share it
+    volumes:
+      - binder-data:/data
+    environment:
+      BINDER_PREVIEWS: "auto"                         # previews render only in the full image
+      # BINDER_PUBLIC_URL: https://binder.example.com   # the URL people use, when behind a proxy
+volumes:
+  binder-data:

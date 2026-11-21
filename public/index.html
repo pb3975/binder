@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Binder</title>
+  <meta name="color-scheme" content="light dark">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/app.css">
+  <script src="/theme.js"></script>
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="/" aria-label="Binder home">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="5" y="3" width="22" height="26" rx="4" fill="currentColor" opacity=".14"/><rect x="5" y="3" width="22" height="26" rx="4" fill="none" stroke="currentColor" stroke-width="2"/><g fill="currentColor"><circle cx="5" cy="10" r="2.4"/><circle cx="5" cy="16" r="2.4"/><circle cx="5" cy="22" r="2.4"/></g><path d="M12 11h9M12 16h9M12 21h6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      <span>Binder</span>
+    </a>
+    <label class="search">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <input id="q" type="search" placeholder="Search titles, summaries, tags" autocomplete="off" spellcheck="false">
+      <kbd>/</kbd>
+    </label>
+    <div class="top-actions">
+      <button class="icon-btn only-narrow" id="filters-toggle" aria-label="Filters" aria-expanded="false">
+        <svg viewBox="0 0 24 24"><path d="M4 6h16M7 12h10M10 18h4"/></svg>
+      </button>
+      <button class="icon-btn" id="help-btn" aria-label="How agents add artifacts" title="How agents add artifacts">
+        <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+      </button>
+      <button class="icon-btn" id="theme-btn" aria-label="Toggle theme" title="Toggle theme">
+        <svg viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+      </button>
+      <button class="icon-btn" id="me-btn" hidden aria-label="Account">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 20c1.5-3.5 4.5-5 8-5s6.5 1.5 8 5"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <div class="shell">
+    <aside class="filters" id="filters" aria-label="Filters"></aside>
+    <main class="library">
+      <div class="toolbar">
+        <div class="seg" role="radiogroup" aria-label="Group by" id="group"></div>
+        <div class="toolbar-right">
+          <select id="sort" aria-label="Sort">
+            <option value="newest">Newest first</option>
+            <option value="oldest">Oldest first</option>
+            <option value="title">Title A–Z</option>
+            <option value="updated">Recently updated</option>
+          </select>
+          <div class="seg compact" role="radiogroup" aria-label="View" id="view">
+            <button data-v="grid" aria-label="Grid view" title="Grid"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg></button>
+            <button data-v="list" aria-label="List view" title="List"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
+          </div>
+        </div>
+      </div>
+      <div class="active" id="active"></div>
+      <div id="results"></div>
+    </main>
+  </div>
+
+  <section class="signin" id="signin" hidden aria-labelledby="signin-title">
+    <form id="signin-form" class="signin-card">
+      <h2 id="signin-title">Sign in to Binder</h2>
+      <p>Paste your Binder token. Binder keeps you signed in on this browser for 30 days.</p>
+      <label for="signin-token">Token</label>
+      <input id="signin-token" type="password" autocomplete="off" spellcheck="false" placeholder="bnd_…" required>
+      <p class="signin-error" id="signin-error" role="alert"></p>
+      <button class="btn primary" type="submit">Sign in</button>
+      <p class="muted small">No token? Ask whoever runs this Binder. On the server, they run <code>binder token create --name you</code>.</p>
+    </form>
+  </section>
+
+  <section class="viewer" id="viewer" hidden aria-label="Artifact viewer">
+    <div class="viewer-bar">
+      <button class="icon-btn" id="v-back" aria-label="Back to library" title="Back (Esc)"><svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg></button>
+      <div class="v-titles">
+        <div class="v-title" id="v-title"></div>
+        <div class="v-sub" id="v-sub"></div>
+      </div>
+      <div class="v-actions">
+        <button class="icon-btn" id="v-prev" aria-label="Previous artifact" title="Previous ([)"><svg viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></svg></button>
+        <button class="icon-btn" id="v-next" aria-label="Next artifact" title="Next (])"><svg viewBox="0 0 24 24"><path d="M12 5v14M6 13l6 6 6-6"/></svg></button>
+        <button class="icon-btn" id="v-copy" aria-label="Copy link" title="Copy link"><svg viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg></button>
+        <a class="icon-btn" id="v-open" target="_blank" rel="noopener" aria-label="Open in new tab" title="Open in new tab"><svg viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg></a>
+        <button class="icon-btn" id="v-info" aria-label="Details" title="Details (i)" aria-expanded="false"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/></svg></button>
+      </div>
+    </div>
+    <div class="v-version" id="v-version" hidden></div>
+    <div class="viewer-body">
+      <iframe id="v-frame" title="Artifact" sandbox="allow-scripts allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-downloads" referrerpolicy="no-referrer"></iframe>
+      <aside class="v-panel" id="v-panel" hidden></aside>
+    </div>
+  </section>
+
+  <dialog id="help">
+    <form method="dialog">
+      <h2>Put it in the binder</h2>
+      <p>Agents publish with one request. A single HTML file becomes <code>index.html</code>. Send more <code>file</code> parts for a multi-file artifact; the filename is its path.</p>
+      <pre id="help-snippet"></pre>
+      <p class="muted">Send the same <code>id</code> again to publish a new version, with a <code>note</code> that says what changed. Agents can use the <code>binder</code> skill in this repo's <code>skill/</code> folder.</p>
+      <div class="dialog-actions"><button class="btn" id="help-copy" type="button">Copy</button><button class="btn primary">Done</button></div>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="/app.js" type="module"></script>
+</body>
+</html>

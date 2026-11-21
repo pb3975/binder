@@ -1,0 +1,42 @@
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || vars.FLEET_CI_RUNS_ON || '"ubuntu-latest"') }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      - name: Typecheck and tests (contract, history, migration, auth)
+        run: bun run check
+      - name: Compose file is valid
+        # The docker:cli image ships the compose plugin, so this works on runners without it.
+        run: docker run --rm -v "$PWD:/w:ro" -w /w docker:27.5-cli docker compose config -q
+
+  e2e:
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || vars.FLEET_CI_RUNS_ON || '"ubuntu-latest"') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [full, slim]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Container end-to-end (${{ matrix.target }} image)
+        run: TARGET=${{ matrix.target }} scripts/e2e.sh binder:ci-${{ matrix.target }}-${{ github.run_id }}
+
+  # Proves the image builds on arm64 (Raspberry Pi, Apple silicon hosts, Graviton).
+  # GitHub's arm runners are free for public repositories only, so this runs once the repo is public.
+  arm64:
+    if: ${{ !github.event.repository.private }}
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Container end-to-end on arm64 (slim image)
+        run: TARGET=slim scripts/e2e.sh binder:ci-arm64

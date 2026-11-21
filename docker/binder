@@ -1,0 +1,5 @@
+#!/bin/sh
+# `binder token ...` inside the container. Runs as the same user as the server,
+# so `docker exec` never leaves root-owned database files behind.
+[ "$(id -u)" = 0 ] && exec su-exec bun bun /app/src/cli.ts "$@"
+exec bun /app/src/cli.ts "$@"
