@@ -135,6 +135,19 @@ function parseAuth(ctx: Context): Auth {
   }
 }
 
+/** The first Binder release with S3 storage. An older image ignores BINDER_STORAGE and keeps data on task storage, which Fargate deletes. */
+export const MIN_VERSION = "0.2.0";
+
+/** True when tag is a release older than MIN_VERSION. Tags that are not versions (a digest, a branch build) are the operator's call. */
+function olderThanMin(tag: string): boolean {
+  const m = tag.match(/^v?(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?(?:-full)?$/);
+  if (!m) return false;
+  const [a, b, c] = MIN_VERSION.split(".").map(Number) as [number, number, number];
+  const v = [Number(m[1]), Number(m[2]), Number(m[3])];
+  for (const [x, y] of [[v[0], a], [v[1], b], [v[2], c]] as const) if (x !== y) return x! < y;
+  return Boolean(m[4]); // 0.2.0-rc.1 comes before 0.2.0
+}
+
 /** Parses and checks the stack's inputs. `defaults.imageTag` is the version in the repository's package.json. */
 export function parseConfig(ctx: Context, defaults: { imageTag: string }): BinderConfig {
   const domainName = text(ctx, "domainName");
@@ -163,6 +176,11 @@ export function parseConfig(ctx: Context, defaults: { imageTag: string }): Binde
     bucketName: text(ctx, "bucketName"),
   };
 
+  if (olderThanMin(config.imageTag))
+    fail(
+      `imageTag ${config.imageTag} has no S3 storage, so Fargate would delete every artifact when the task stops. ` +
+        `Use Binder ${MIN_VERSION} or later: check out a release tag, or pass -c imageTag=<version>.`,
+    );
   if (config.internetFacing && config.subnetType === "private") fail("internetFacing=true needs subnetType=public");
   if (config.internetFacing && config.auth.mode === "none") fail("refusing internetFacing=true with auth=none: anyone on the internet could publish and delete");
   if (config.internetFacing && !config.domain) fail("refusing internetFacing=true without HTTPS: set domainName and hostedZoneId");

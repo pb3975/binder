@@ -128,7 +128,7 @@ Pass each one as `-c key=value`.
 | Key | Default | What it does |
 |---|---|---|
 | `image` | `ghcr.io/pb3975/binder` | Image repository. |
-| `imageTag` | the version in `package.json` | Binder release to run. |
+| `imageTag` | the version in `package.json` | Binder release to run. Synth refuses a release older than 0.2.0, because it has no S3 storage and Fargate would delete its data. |
 | `previews` | `slim` | `full` runs the `-full` image with Chromium previews. Read [why it is opt-in](design.md#previews). |
 | `auth` | `token` | `token`, `oidc`, or `none` (internal only, with a warning). `header` is refused: an ALB alone cannot make a user header safe. |
 | `oidcIssuer`, `oidcClientId`, `oidcClientSecretArn` | | Required for `auth=oidc`. The secret is an ARN, never a value. |

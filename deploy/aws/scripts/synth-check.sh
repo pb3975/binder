@@ -12,18 +12,24 @@ unset CDK_DEFAULT_ACCOUNT AWS_PROFILE || true
 
 rm -rf cdk.out/check
 cdk() { ./node_modules/.bin/cdk synth --quiet --no-version-reporting --no-notices "$@"; }
+# A fixed release tag, so the check does not depend on the version in package.json.
+TAG="-c imageTag=0.2.0"
 
-cdk -o cdk.out/check/default
-cdk -o cdk.out/check/oidc \
+cdk -o cdk.out/check/default $TAG
+cdk -o cdk.out/check/oidc $TAG \
   -c auth=oidc \
   -c domainName=binder.example.com -c hostedZoneId=Z0123456789EXAMPLE \
   -c oidcIssuer=https://sso.example.com/realms/team -c oidcClientId=binder \
   -c oidcClientSecretArn=arn:aws:secretsmanager:us-east-1:123456789012:secret:binder/oidc-AbCdEf \
   -c allowedGroups=binder-users -c oidcLabel=Keycloak
 
-# An unsafe combination must stop synth.
-if cdk -o cdk.out/check/refused -c internetFacing=true -c auth=none >/dev/null 2>&1; then
+# Unsafe combinations must stop synth.
+if cdk -o cdk.out/check/refused $TAG -c internetFacing=true -c auth=none >/dev/null 2>&1; then
   echo "synth-check: internetFacing=true with auth=none was not refused" >&2
+  exit 1
+fi
+if cdk -o cdk.out/check/refused -c imageTag=0.1.0 >/dev/null 2>&1; then
+  echo "synth-check: an image without S3 storage (0.1.0) was not refused" >&2
   exit 1
 fi
 

@@ -55,4 +55,14 @@ describe("parseConfig", () => {
   test("storage prefix is trimmed of slashes", () => {
     expect(parse({ storagePrefix: "/teams/a/" }).storagePrefix).toBe("teams/a");
   });
+
+  test("an image without S3 storage is refused, so a task restart cannot lose data", () => {
+    const tag = (imageTag: string) => parseConfig({}, { imageTag });
+    expect(() => tag("0.1.0")).toThrow(/no S3 storage/);
+    expect(() => tag("0.2.0-rc.1")).toThrow(/no S3 storage/);
+    expect(() => parse({ imageTag: "v0.1.9" })).toThrow(/no S3 storage/);
+    expect(tag("0.2.0").imageTag).toBe("0.2.0");
+    expect(tag("1.0.0").imageTag).toBe("1.0.0");
+    expect(parse({ imageTag: "sha-1a2b3c4" }).imageTag).toBe("sha-1a2b3c4");
+  });
 });
