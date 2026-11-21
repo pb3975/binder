@@ -12,6 +12,7 @@ ENV NODE_ENV=production BINDER_DATA_DIR=/data HOST=0.0.0.0 PORT=8480 TMPDIR=/tmp
 COPY package.json ./
 COPY src ./src
 COPY public ./public
+COPY skill/binder/SKILL.md ./skill/binder/SKILL.md
 COPY docker/entrypoint.sh /usr/local/bin/binder-entrypoint
 COPY docker/binder /usr/local/bin/binder
 ARG BINDER_BUILD=

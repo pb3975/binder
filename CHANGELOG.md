@@ -14,6 +14,7 @@ All notable changes to Binder are recorded here. The format follows [Keep a Chan
 - The `slim` image (no Chromium) is the default. The `full` image renders previews.
 - Docker Compose quick start, a Fly.io example, multi-arch images (amd64 and arm64), and a drop-in agent skill (`skill/binder/SKILL.md`).
 - `/healthz` reports the version and build.
+- `/llms.txt` serves the publish instructions to any agent, with the instance's URL and auth filled in.
 
 ### Changed
 

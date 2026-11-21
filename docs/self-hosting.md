@@ -12,7 +12,7 @@ docker compose exec binder binder token create --name you
 
 1. Copy the `bnd_...` token that the last command prints. Binder shows it only once.
 2. Open <http://localhost:8480> and paste the token.
-3. Give an agent the same kind of token (`binder token create --name my-agent`) and the skill in [`skill/binder/SKILL.md`](../skill/binder/SKILL.md).
+3. Give an agent the same kind of token (`binder token create --name my-agent`) and the skill in [`skill/binder/SKILL.md`](../skill/binder/SKILL.md). An agent without the skill can read the same instructions at <http://localhost:8480/llms.txt>.
 
 Compose binds Binder to `localhost` only. To share it, put HTTPS in front (see below) and set `BINDER_PUBLIC_URL`.
 

@@ -1,4 +1,4 @@
-import { cpSync, existsSync, mkdirSync, renameSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { join, normalize } from "node:path";
 import { authenticator, SESSION_COOKIE, type Principal } from "./auth";
 import { loadConfig, type Config } from "./config";
@@ -15,6 +15,12 @@ const PUBLIC_DIR = join(import.meta.dir, "..", "public");
 // never read Binder's origin, cookies, or storage. Same header on every content file.
 const VIEW_CSP =
   "sandbox allow-scripts allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-downloads";
+
+// The agent skill, without its frontmatter. /llms.txt serves it so an agent given only
+// Binder's URL can learn to publish. One source, so the two never drift apart.
+const SKILL_BODY = readFileSync(join(import.meta.dir, "..", "skill", "binder", "SKILL.md"), "utf8")
+  .replace(/^---\n[\s\S]*?\n---\n+/, "")
+  .replace(/^# Binder\n+/, "");
 
 const kebab = (s: unknown, fallback: string) =>
   String(s ?? "")
@@ -323,6 +329,19 @@ export function createApp(cfg: Config, opts: { now?: () => number } = {}) {
     return new Response(zipStream(entries, new Date(v.created_at)), { headers: headers(`${name}.zip`, "application/zip") });
   }
 
+  /** How to publish here, for agents (https://llmstxt.org). Public: it says nothing the repo does not. */
+  function llmsTxt(req: Request): Response {
+    const origin = originOf(req);
+    const token = "send `Authorization: Bearer <token>` with every API request. Ask your user for one; never guess or create one.";
+    const access = cfg.devAnonymous
+      ? "This instance has authentication off. No token is needed."
+      : cfg.authHeader
+        ? `This instance trusts a sign-in proxy (such as Tailscale). If you reach it through that proxy as an allowed user, no token is needed. Otherwise ${token}`
+        : `This instance needs a token: ${token}`;
+    const body = `# Binder\n\n> A self-hosted library of agent-built pages, at ${origin}. ${access}\n\nSet \`BINDER_URL=${origin}\` and follow the steps below.\n\n${SKILL_BODY}`;
+    return new Response(body, { headers: { "content-type": "text/markdown; charset=utf-8", "cache-control": "no-cache", "x-content-type-options": "nosniff" } });
+  }
+
   /** Serves one file of one version. The token in the path is the only credential. */
   async function content(id: string, n: number, tok: string, rest: string): Promise<Response> {
     const mode = sign.verify(id, n, tok);
@@ -415,6 +434,7 @@ export function createApp(cfg: Config, opts: { now?: () => number } = {}) {
     let m: RegExpMatchArray | null;
 
     if (path === "/healthz") return json({ ok: true, version: VERSION, build: BUILD });
+    if (path === "/llms.txt") return llmsTxt(req);
     if (method === "GET" || method === "HEAD") {
       // The UI shell is public. It holds no data, so a signed-out browser can show the sign-in screen.
       if (path === "/" || path.startsWith("/a/")) return staticFile("index.html");
