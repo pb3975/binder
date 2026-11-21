@@ -331,9 +331,12 @@ export function createApp(cfg: Config, opts: { now?: () => number } = {}) {
   /** How to publish here, for agents (https://llmstxt.org). Public: it says nothing the repo does not. */
   function llmsTxt(req: Request): Response {
     const origin = originOf(req);
+    const token = "send `Authorization: Bearer <token>` with every API request. Ask your user for one; never guess or create one.";
     const access = cfg.devAnonymous
       ? "This instance has authentication off. No token is needed."
-      : "This instance needs a token: send `Authorization: Bearer <token>` with every API request. Ask your user for one; never guess or create one.";
+      : cfg.authHeader
+        ? `This instance trusts a sign-in proxy (such as Tailscale). If you reach it through that proxy as an allowed user, no token is needed. Otherwise ${token}`
+        : `This instance needs a token: ${token}`;
     const body = `# Binder\n\n> A self-hosted library of agent-built pages, at ${origin}. ${access}\n\nSet \`BINDER_URL=${origin}\` and follow the steps below.\n\n${SKILL_BODY}`;
     return new Response(body, { headers: { "content-type": "text/markdown; charset=utf-8", "cache-control": "no-cache", "x-content-type-options": "nosniff" } });
   }

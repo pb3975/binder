@@ -52,4 +52,11 @@ test("/llms.txt serves the skill to any agent, with this instance's URL and auth
   } finally {
     open.stop();
   }
+  const proxied = startBinder(); // header mode, as behind tailscale serve
+  try {
+    const t = await (await fetch(`${proxied.base}/llms.txt`)).text();
+    expect(t).toContain("If you reach it through that proxy as an allowed user, no token is needed. Otherwise send `Authorization: Bearer <token>`");
+  } finally {
+    proxied.stop();
+  }
 });
