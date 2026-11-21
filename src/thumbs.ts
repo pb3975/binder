@@ -1,7 +1,8 @@
-import { existsSync, mkdirSync, renameSync, rmSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { Signer } from "./content";
 import type { Db } from "./db";
+import { thumbKey, type Storage } from "./storage";
 
 /**
  * Renders a 640x400 preview of an artifact's current version with headless Chromium.
@@ -11,10 +12,16 @@ import type { Db } from "./db";
  * Binder's own /c/ path. See docs/design.md, "Previews", and test/e2e/previews.test.ts.
  * One render at a time: a home server is not a render farm.
  */
-export function thumbnailer(opts: { db: Db; dataDir: string; signer: Signer; chromium: string | null; hosts: string[] }) {
-  const { db, dataDir, signer, chromium: bin } = opts;
-  const thumbDir = join(dataDir, "thumbs");
-  mkdirSync(thumbDir, { recursive: true });
+export function thumbnailer(opts: {
+  db: Db;
+  storage: Storage;
+  /** Local scratch folder; Chromium writes the screenshot here before it is stored. */
+  tmpDir: string;
+  signer: Signer;
+  chromium: string | null;
+  hosts: string[];
+}) {
+  const { db, storage, tmpDir, signer, chromium: bin } = opts;
   const queue: string[] = [];
   let origin: string | null = null;
   let running = false;
@@ -23,7 +30,7 @@ export function thumbnailer(opts: { db: Db; dataDir: string; signer: Signer; chr
     const a = db.get(id);
     if (!a || !bin || !origin) return;
     if (!/\.html?$/i.test(a.entry)) return; // images and SVGs preview themselves; other files get a cover
-    const out = join(thumbDir, `${id}.tmp.png`);
+    const out = join(tmpDir, `thumb-${id}-${crypto.randomUUID()}.png`);
     const profile = join(process.env.TMPDIR ?? "/tmp", `binder-chrome-${id}-${Date.now()}`);
     const proc = Bun.spawn(
       [
@@ -44,12 +51,14 @@ export function thumbnailer(opts: { db: Db; dataDir: string; signer: Signer; chr
     clearTimeout(timer);
     rmSync(profile, { recursive: true, force: true });
     // Only record the preview if the artifact was not republished while rendering.
-    if (existsSync(out) && db.get(id)?.version === a.version) {
-      renameSync(out, join(thumbDir, `${id}.png`));
-      db.setThumb(id, true);
-    } else {
+    try {
+      if (existsSync(out) && db.get(id)?.version === a.version) {
+        await storage.write(thumbKey(id), Bun.file(out));
+        // A publish during the upload queued a new render, which replaces this preview.
+        if (db.get(id)?.version === a.version) db.setThumb(id, true);
+      } else if (db.get(id)?.version === a.version) console.warn(`thumbnail failed for ${id}`);
+    } finally {
       rmSync(out, { force: true });
-      if (db.get(id)?.version === a.version) console.warn(`thumbnail failed for ${id}`);
     }
   }
 
@@ -83,6 +92,5 @@ export function thumbnailer(opts: { db: Db; dataDir: string; signer: Signer; chr
     async idle() {
       while (origin && (running || queue.length)) await Bun.sleep(50);
     },
-    path: (id: string) => join(thumbDir, `${id}.png`),
   };
 }

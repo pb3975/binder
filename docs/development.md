@@ -6,6 +6,8 @@
 - TypeScript 5.9 for type checks only (`devDependencies`).
 - Chromium for preview images. Locally the server uses `/usr/bin/chromium` if present; previews are skipped when it is missing.
 - Docker for the image (`oven/bun:1.4.2-alpine`; the `full` target adds Alpine `chromium`, the `slim` target does not).
+- [Litestream](https://litestream.io) 0.5.18 in both images, for S3 storage only. The Dockerfile pins the release and checks its sha256 per architecture. To upgrade, change `LITESTREAM_VERSION` and both sums from the release's `checksums.txt`.
+- MinIO for the S3 end-to-end test only (`bitnamilegacy/minio`, pinned by digest in `scripts/e2e-s3.sh`).
 
 ## Run locally
 
@@ -26,9 +28,13 @@ bun run check                    # tsc --noEmit && bun test (contract, history, 
 scripts/e2e.sh                   # builds the image, boots a clean container, runs test/e2e/ with real Chromium
 TARGET=slim scripts/e2e.sh       # the same for the image without Chromium
 SHOTS=/tmp/shots scripts/e2e.sh  # also saves UI screenshots
+scripts/e2e-s3.sh                # S3 storage with Litestream, against MinIO (see the script's header)
+TARGET=full scripts/e2e-s3.sh    # the same, plus previews stored in S3
 ```
 
-CI runs all three, plus an arm64 build once the repo is public (`.github/workflows/ci.yml`). Pushing a `v*` tag publishes a release; see [releasing.md](releasing.md). The e2e run checks publish, view, and history, and two security properties in a real browser: previews cannot reach internal http services, and an artifact in the viewer cannot read or change Binder.
+`bun run check` tests the local storage backend. To test the S3 backend against your own MinIO, set `BINDER_TEST_S3=s3://<bucket>/<prefix>` and the `AWS_*` variables, then run `bun test test/storage.test.ts`. `scripts/e2e-s3.sh` does this in a container.
+
+CI runs all of these, plus an arm64 build once the repo is public (`.github/workflows/ci.yml`). Pushing a `v*` tag publishes a release; see [releasing.md](releasing.md). The e2e run checks publish, view, and history, and two security properties in a real browser: previews cannot reach internal http services, and an artifact in the viewer cannot read or change Binder.
 
 ## Deploy over SSH (maintainers)
 
@@ -55,3 +61,5 @@ Merging to `main` does not deploy.
 - `thumbs/<id>.png` — 640x400 previews of the current version.
 - `tmp/` — staged uploads, cleared on start.
 - `trash/` — files from schema v1 and orphaned folders. Binder never reads it.
+
+With S3 storage, `/data` holds only `binder.sqlite` (restored by Litestream at start) and `tmp/`. `versions/` and `thumbs/` are keys in the bucket under the prefix, the Litestream replica is under `<prefix>/db/`, and the signing key comes from `BINDER_SECRET_KEY`.

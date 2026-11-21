@@ -2,6 +2,22 @@
 
 Newest first. Each entry says what was decided and why. [design.md](design.md) has the full reasoning.
 
+## 2026-11-21: S3 storage for a container host with no disk (AWS Fargate)
+
+**Need:** run Binder on AWS Fargate. A Fargate task has no persistent disk: everything on it is gone when the task stops or moves.
+
+- **Version files and previews go to S3 when `BINDER_STORAGE=s3://<bucket>/<prefix>`.** S3 is the durable store. Keys: `versions/<id>/<n>/<path>`, `thumbs/<id>.png`, and `db/` for the database replica. Local disk stays the default and works as before.
+- **The SQLite database stays on the task's local disk, and Litestream copies it to S3.** SQLite on EFS or another network file system is not safe: its locks depend on the file system, and NFS locks are not reliable. Litestream restores the database from S3 at start, then runs Binder as its child and copies every change. Invariant 4 ("one process") gets one exception in S3 mode: Litestream supervises Binder in the same container.
+- **The data loss window is about one second.** Litestream copies asynchronously (`sync-interval` 1s). A crash can lose the last database writes. On SIGTERM, Litestream stops Binder first and then makes a last copy, so an ordinary task stop loses nothing.
+- **A failed restore stops the container.** Only "no replica yet" may start an empty database. Otherwise an empty Binder with wrong credentials or a typo in the bucket could later replicate over the real data.
+- **Content still goes through Binder, never a redirect to S3.** A presigned URL would drop the CSP `sandbox` header. Measured: `new Response(s3File)` in Bun answers 302 to a presigned URL, so the storage interface returns plain Blobs and never an S3File.
+- **One writer per prefix.** Binder must be the only process that uses a prefix. Inside the process, publishes and restores run one at a time, so ids and version numbers are decided together with the uploads. A version row is written only after every file is in S3. A number that has files but no row (an upload that never committed, or a row lost in the loss window) is skipped, so those files are never overwritten.
+- **`BINDER_SECRET_KEY` is required with S3.** A key generated on an ephemeral disk would change on every restart and end every session and content URL.
+- **Binder fetches ECS container credentials itself.** Measured: `Bun.S3Client` never calls the container credentials endpoint (with only `AWS_CONTAINER_CREDENTIALS_FULL_URI` set it throws "Missing S3 credentials"). `src/aws.ts` reads static keys first, then the endpoint, and refreshes 5 minutes before `Expiration`. Litestream uses the AWS SDK for Go, which reads the endpoint itself; CI checks both against a fake endpoint.
+- **Litestream 0.5.18, pinned, in both images.** The Dockerfile checks the sha256 of the amd64 and arm64 downloads. The binary is static and adds about 54 MB to each image.
+- **CI uses Bitnami's last free MinIO build, pinned by digest.** `minio/minio` is no longer on Docker Hub. MinIO is only a test fixture here; any S3-compatible store works.
+- **S3 storage starts at schema v2.** The v1 migration moves folders on local disk, so Binder refuses a v1 database in S3 mode. Migrate with local storage first.
+
 ## 2026-11-21: Go public as a new repository (Inbox: binder/go-public)
 
 **Need:** publish Binder without its private history.

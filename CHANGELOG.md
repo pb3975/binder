@@ -15,6 +15,9 @@ All notable changes to Binder are recorded here. The format follows [Keep a Chan
 - Docker Compose quick start, a Fly.io example, multi-arch images (amd64 and arm64), and a drop-in agent skill (`skill/binder/SKILL.md`).
 - `/healthz` reports the version and build.
 - `/llms.txt` serves the publish instructions to any agent, with the instance's URL and auth filled in.
+- S3 storage for container hosts with no persistent disk, such as AWS Fargate (`BINDER_STORAGE=s3://<bucket>/<prefix>`). Version files and previews live in S3. The database stays local and Litestream copies it to S3, then restores it on the next start. Credentials come from the standard AWS variables or an ECS task role. See [docs/self-hosting.md](docs/self-hosting.md#storage).
+- `BINDER_SECRET_KEY` sets the signing key from the environment instead of `secret.key`. S3 storage requires it.
+- Both images include Litestream 0.5.18 (about 54 MB).
 
 ### Changed
 

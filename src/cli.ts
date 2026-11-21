@@ -18,7 +18,8 @@ export function run(argv: string[], env: Record<string, string | undefined> = pr
     return i >= 0 ? rest[i + 1] : undefined;
   };
   // Only the data folder matters here; skip auth checks that apply to the server.
-  const cfg = loadConfig({ ...env, BINDER_AUTH_HEADER: undefined, BINDER_PREVIEWS: "off" });
+  // With S3 storage the database is still local (Litestream copies it to S3), so storage settings do not matter.
+  const cfg = loadConfig({ ...env, BINDER_AUTH_HEADER: undefined, BINDER_PREVIEWS: "off", BINDER_STORAGE: undefined, BINDER_SECRET_KEY: undefined });
   mkdirSync(cfg.dataDir, { recursive: true }); // a fresh install may run the CLI before the server
   const db = openDb(cfg.dataDir);
   const at = new Date().toISOString();
