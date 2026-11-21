@@ -42,3 +42,26 @@ jobs:
       - uses: actions/checkout@v4
       - name: Container end-to-end on arm64 (slim image)
         run: TARGET=slim scripts/e2e.sh binder:ci-arm64
+
+  # The AWS quick start (deploy/aws, docs/aws.md): CDK assertions, then synth and cfn-lint.
+  # Needs no AWS credentials and deploys nothing.
+  aws:
+    runs-on: ubuntu-latest # public repo: never self-hosted, so fork PRs cannot reach private machines
+    defaults:
+      run:
+        working-directory: deploy/aws
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - uses: actions/setup-node@v4 # the CDK CLI runs on Node
+        with:
+          node-version: 22
+      - run: bun install --frozen-lockfile
+      - name: Typecheck and CDK assertions
+        run: bun run check
+      - name: Install cfn-lint
+        run: pipx install cfn-lint==1.60.1
+      - name: Synth (token default, OIDC + HTTPS) and cfn-lint
+        run: bun run synth-check

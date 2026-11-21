@@ -37,6 +37,10 @@ BINDER_DATA_DIR=/var/lib/binder bun src/server.ts
 
 Install Chromium for previews, or set `BINDER_PREVIEWS=off`. Run it under systemd, launchd, or any process manager. It listens on `127.0.0.1:8480` by default.
 
+## AWS (ECS Fargate and S3)
+
+[docs/aws.md](aws.md) deploys a private Binder for a team with one AWS CDK stack: one Fargate task, an internal load balancer, and S3 for the data. It has not been deployed by CI.
+
 ## Fly.io
 
 [`fly.toml`](../fly.toml) is an example with HTTPS, one volume, and the health check. It has not been deployed by CI; please report anything that needs changing.

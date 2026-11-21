@@ -42,7 +42,7 @@ Run the same command again with new content and a new `note` to see version hist
 
 - **Tokens.** Each person and each agent gets a named token (`binder token create --name alice`, `--scope read` for read-only). History records who published each version. Revoking a token ends its browser sessions too.
 - **Single sign-on through a proxy.** Behind Tailscale or another identity-aware proxy, Binder can trust the proxy's user header. It accepts the header only from the proxy's address and only for allowed logins.
-- **Anywhere.** Docker Compose, plain `docker run`, bare Bun, or a cloud container host. [`fly.toml`](fly.toml) is a Fly.io example (not yet deployed by CI).
+- **Anywhere.** Docker Compose, plain `docker run`, bare Bun, or a cloud container host. [`fly.toml`](fly.toml) is a Fly.io example, and [docs/aws.md](docs/aws.md) deploys a private Binder on AWS (ECS Fargate and S3) with the CDK. Neither is deployed by CI yet.
 - **Previews.** The default image is small and shows a generated cover for each page. The `full` image renders preview images with Chromium. Use it when you trust your publishers. [Why](docs/design.md#previews).
 
 Everything is in [docs/self-hosting.md](docs/self-hosting.md).
