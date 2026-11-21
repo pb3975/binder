@@ -7,7 +7,7 @@ permissions:
   contents: read
 jobs:
   check:
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || vars.FLEET_CI_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ubuntu-latest # public repo: never self-hosted, so fork PRs cannot reach private machines
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -21,7 +21,7 @@ jobs:
         run: docker run --rm -v "$PWD:/w:ro" -w /w docker:27.5-cli docker compose config -q
 
   e2e:
-    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || vars.FLEET_CI_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ubuntu-latest # public repo: never self-hosted, so fork PRs cannot reach private machines
     strategy:
       fail-fast: false
       matrix:
