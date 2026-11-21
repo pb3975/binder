@@ -6,6 +6,7 @@ import { loadSecret, signer } from "./content";
 import { openDb, sha256, versionDir, type Artifact, type ArtifactRow, type FileEntry, type Version } from "./db";
 import { thumbnailer } from "./thumbs";
 import { BUILD, VERSION } from "./version";
+import { ZIP_MAX_ENTRIES, zipStream } from "./zip";
 
 const MAX_BYTES = 64 * 1024 * 1024;
 const PUBLIC_DIR = join(import.meta.dir, "..", "public");
@@ -294,6 +295,34 @@ export function createApp(cfg: Config, opts: { now?: () => number } = {}) {
     return json({ deleted: id });
   }
 
+  /**
+   * One version as a file to keep: the file itself when the version has one file, otherwise a zip
+   * with a top folder. It is an attachment with a sandbox CSP, so a browser saves it and never runs it here.
+   */
+  async function download(id: string, n: number | null): Promise<Response> {
+    const row = db.row(id);
+    const v = row && !row.deleted_at ? db.version(id, n ?? row.version) : null;
+    if (!v) return fail(404, "not found");
+    const dir = versionDir(cfg.dataDir, id, v.version);
+    const name = `${id}-v${v.version}`;
+    const headers = (filename: string, type: string) => ({
+      "content-type": type,
+      "content-disposition": `attachment; filename="${filename}"`,
+      "content-security-policy": "sandbox",
+      "x-content-type-options": "nosniff",
+      "cache-control": "private, no-store",
+    });
+    if (v.files.length === 1) {
+      const f = v.files[0]!;
+      // The id is [\w-]+; keep the extension only when it is plain ASCII, so the header stays well-formed.
+      const ext = f.path.match(/\.[A-Za-z0-9]{1,10}$/)?.[0] ?? "";
+      return new Response(Bun.file(join(dir, f.path)), { headers: headers(`${name}${ext}`, f.type || "application/octet-stream") });
+    }
+    if (v.files.length > ZIP_MAX_ENTRIES) return fail(422, `this version has more than ${ZIP_MAX_ENTRIES} files, too many for a zip`);
+    const entries = v.files.map((f) => ({ path: `${name}/${f.path}`, read: () => Bun.file(join(dir, f.path)).bytes() }));
+    return new Response(zipStream(entries, new Date(v.created_at)), { headers: headers(`${name}.zip`, "application/zip") });
+  }
+
   /** Serves one file of one version. The token in the path is the only credential. */
   async function content(id: string, n: number, tok: string, rest: string): Promise<Response> {
     const mode = sign.verify(id, n, tok);
@@ -419,6 +448,8 @@ export function createApp(cfg: Config, opts: { now?: () => number } = {}) {
       if (method === "DELETE") return remove(id);
     }
     if ((m = path.match(/^\/api\/artifacts\/([\w-]+)\/versions$/)) && method === "GET") return history(m[1]!, req);
+    if ((m = path.match(/^\/api\/artifacts\/([\w-]+)(?:\/versions\/(\d+))?\/download$/)) && method === "GET")
+      return download(m[1]!, m[2] ? Number(m[2]) : null);
     if ((m = path.match(/^\/api\/artifacts\/([\w-]+)\/versions\/(\d+)\/restore$/)) && method === "POST")
       return restore(m[1]!, Number(m[2]), who, req);
     if ((m = path.match(/^\/api\/artifacts\/([\w-]+)\/thumbnail$/)) && method === "POST") {

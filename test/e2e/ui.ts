@@ -63,6 +63,12 @@ for (const dark of [false, true]) {
     await b.waitFor(`!document.querySelector("#v-version").hidden`);
     check(`old version opens with a banner${sfx}`, (await b.evaluate<string>(`document.querySelector("#v-version").textContent`)).includes("Viewing version 1 of 3"));
     check(`old version loads its own content URL${sfx}`, (await b.evaluate<string>(`document.querySelector("#v-frame").src`)).includes("/c/queue-explainer/1/"));
+    const dl = await b.evaluate<string>(`(async () => {
+      const a = document.querySelector("#v-download");
+      const r = await fetch(a.href);
+      return [a.getAttribute("href"), r.status, r.headers.get("content-disposition")].join(" | ");
+    })()`);
+    check(`download saves the version on screen${sfx}`, dl === '/api/artifacts/queue-explainer/versions/1/download | 200 | attachment; filename="queue-explainer-v1.html"', dl);
     await Bun.sleep(500);
     await shot(b, `viewer-old-version${sfx}`);
     await b.evaluate(`document.querySelector('[data-act="latest"]').click()`);
