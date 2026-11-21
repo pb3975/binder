@@ -28,6 +28,13 @@ test("a one-file version downloads as that file, never rendered by the browser",
   expect(await r.text()).toBe("<p>solo</p>");
 });
 
+test("an odd file name never breaks the download header", async () => {
+  await publish({ id: "odd", title: "Odd" }, [['say "hi" é.ht ml', "x"]]);
+  const r = await download("odd/download");
+  expect(r.status).toBe(200);
+  expect(r.headers.get("content-disposition")).toBe('attachment; filename="odd-v1"');
+});
+
 test.skipIf(!python)("a multi-file version downloads as a valid zip with a top folder", async () => {
   const big = "<p>" + "repeat ".repeat(2000) + "</p>"; // deflated
   await publish({ id: "deck", title: "Deck" }, [["index.html", big], ["img/a.svg", "<svg/>"], ["notes é.txt", "é"]]);

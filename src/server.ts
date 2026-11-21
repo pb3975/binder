@@ -313,7 +313,8 @@ export function createApp(cfg: Config, opts: { now?: () => number } = {}) {
     });
     if (v.files.length === 1) {
       const f = v.files[0]!;
-      const ext = f.path.includes(".") ? f.path.slice(f.path.lastIndexOf(".")) : "";
+      // The id is [\w-]+; keep the extension only when it is plain ASCII, so the header stays well-formed.
+      const ext = f.path.match(/\.[A-Za-z0-9]{1,10}$/)?.[0] ?? "";
       return new Response(Bun.file(join(dir, f.path)), { headers: headers(`${name}${ext}`, f.type || "application/octet-stream") });
     }
     const files = await Promise.all(
