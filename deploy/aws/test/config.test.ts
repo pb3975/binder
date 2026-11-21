@@ -58,7 +58,7 @@ describe("parseConfig", () => {
 
   test("storage prefix follows Binder's own BINDER_STORAGE rule, so a deploy never fails at startup", () => {
     expect(parse({ storagePrefix: "team.a/binder_1-x" }).storagePrefix).toBe("team.a/binder_1-x");
-    for (const bad of ["team//binder", "team binder", "team/bin*der", "équipe", "/"])
+    for (const bad of ["team//binder", "team binder", "team/bin*der", "équipe", "/", ".", "..", "team/../binder", "team/./binder"])
       expect(() => parse({ storagePrefix: bad })).toThrow(/storagePrefix/);
   });
 

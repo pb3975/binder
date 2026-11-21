@@ -186,8 +186,11 @@ export function parseConfig(ctx: Context, defaults: { imageTag: string }): Binde
   if (config.internetFacing && !config.domain) fail("refusing internetFacing=true without HTTPS: set domainName and hostedZoneId");
   if (config.auth.mode === "oidc" && !config.domain) fail("auth=oidc needs HTTPS: set domainName and hostedZoneId");
   // The same rule Binder applies to the prefix in BINDER_STORAGE at startup (src/config.ts, storageConfig).
-  if (!/^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*$/.test(config.storagePrefix))
-    fail(`storagePrefix may use letters, digits, '.', '_', '-' and single slashes between them; got "${config.storagePrefix}"`);
+  if (
+    !/^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*$/.test(config.storagePrefix) ||
+    config.storagePrefix.split("/").some((seg) => seg === "." || seg === "..")
+  )
+    fail(`storagePrefix may use letters, digits, '.', '_', '-' and single slashes between them, with no '.' or '..' segment; got "${config.storagePrefix}"`);
   if (config.bucketName && !/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(config.bucketName)) fail(`bucketName "${config.bucketName}" is not an S3 bucket name`);
   if (!/^\d{1,3}(\.\d{1,3}){3}\/\d{1,2}$/.test(config.allowedCidr)) fail(`allowedCidr must be an IPv4 CIDR; got "${config.allowedCidr}"`);
   return config;
