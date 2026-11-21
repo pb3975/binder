@@ -71,6 +71,14 @@ curl -fsS "$BINDER_URL/api/artifacts" ${BINDER_TOKEN:+-H "Authorization: Bearer 
   | python3 -c 'import json,sys; print(sorted({a["project"] for a in json.load(sys.stdin)["artifacts"]}))'
 ```
 
+## Get the current files to update an artifact
+
+```sh
+curl -fsSOJ "$BINDER_URL/api/artifacts/<id>/download" ${BINDER_TOKEN:+-H "Authorization: Bearer $BINDER_TOKEN"}
+```
+
+This saves `<id>-v<n>.html` for a one-file artifact, or `<id>-v<n>.zip` with a top folder for several files. Add `/versions/<n>` before `/download` for an older version. Edit the files, then publish with the same `id`.
+
 ## If it fails
 
 - `401`: no token, or the token is wrong or revoked. Ask the user for a new one.

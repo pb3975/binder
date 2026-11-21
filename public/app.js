@@ -264,6 +264,9 @@ function showContent(src) {
   const frame = $("#v-frame");
   if (frame.dataset.src !== src) { frame.src = src; frame.dataset.src = src; }
   $("#v-open").href = src;
+  // Download whatever version is on screen. The content URL names it: /c/<id>/<version>/...
+  const m = new URL(src, location.href).pathname.match(/^\/c\/([\w-]+)\/(\d+)\//);
+  if (m) $("#v-download").href = `/api/artifacts/${m[1]}/versions/${m[2]}/download`;
 }
 function renderVersionBar(a) {
   const bar = $("#v-version");
