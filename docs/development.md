@@ -15,7 +15,7 @@ bun run dev                      # http://localhost:8480, no login check, data i
 bun scripts/seed.ts <seed-root> http://localhost:8480
 ```
 
-`bun run dev` sets `BINDER_DEV_ANONYMOUS=1`, which turns authentication off. Never set it on a shared host. To try tokens locally, run `bun run binder token create --name me` and `bun src/server.ts` without that variable. All variables are in [self-hosting.md](self-hosting.md).
+`bun run dev` sets `BINDER_AUTH=none`, which turns sign-in off and answers only on `localhost`. Never use it on a shared host. To try tokens locally, run `bun run binder token create --name me` and `bun src/server.ts` without that variable. All variables are in [self-hosting.md](self-hosting.md).
 
 A seed root holds one folder per artifact: `meta.json` (same fields as the publish `meta`, plus `slug` and optional `skip`) and the artifact files. `bun scripts/demo.ts [url]` publishes synthetic artifacts with version history instead.
 
@@ -26,9 +26,12 @@ bun run check                    # tsc --noEmit && bun test (contract, history, 
 scripts/e2e.sh                   # builds the image, boots a clean container, runs test/e2e/ with real Chromium
 TARGET=slim scripts/e2e.sh       # the same for the image without Chromium
 SHOTS=/tmp/shots scripts/e2e.sh  # also saves UI screenshots
+scripts/e2e-oidc.sh              # signs in through a real Keycloak (quay.io/keycloak/keycloak:26.8.2) in Chromium
 ```
 
-CI runs all three, plus an arm64 build once the repo is public (`.github/workflows/ci.yml`). Pushing a `v*` tag publishes a release; see [releasing.md](releasing.md). The e2e run checks publish, view, and history, and two security properties in a real browser: previews cannot reach internal http services, and an artifact in the viewer cannot read or change Binder.
+`scripts/e2e-oidc.sh` starts Keycloak and the `full` image on one Docker network. Chromium runs inside the Binder container, so Binder and the browser both reach Keycloak as `http://keycloak:8080`. The realm, users, and client secret in `test/e2e/keycloak-realm.json` are synthetic. Unit tests for OIDC (`test/oidc.test.ts`) use a fake provider with real RS256, PS256, and ES256 keys, and need no network.
+
+CI runs all of these, plus an arm64 build once the repo is public (`.github/workflows/ci.yml`). Pushing a `v*` tag publishes a release; see [releasing.md](releasing.md). The e2e run checks publish, view, and history, and two security properties in a real browser: previews cannot reach internal http services, and an artifact in the viewer cannot read or change Binder.
 
 ## Deploy over SSH (maintainers)
 

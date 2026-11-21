@@ -2,6 +2,19 @@
 
 Newest first. Each entry says what was decided and why. [design.md](design.md) has the full reasoning.
 
+## 2026-11-21: Four auth modes: token, none, oidc, header
+
+**Need:** a team with single sign-on can use Binder without a proxy in front, and one person on a laptop can use it without tokens. Agents keep working the same way everywhere.
+
+- **`BINDER_AUTH` = `token` (default), `none`, `oidc`, or `header`.** Bearer tokens work in every mode, because agents always use tokens. Binder never stores a password; in oidc mode the identity provider owns passwords and MFA.
+- **Built-in OIDC, reversing the 2026-11-20 rejection.** The proxy recipe needed a second service and three easy-to-miss rules. Binder does the authorization code flow with PKCE (S256), `state`, and `nonce`, and verifies the ID token itself with Web Crypto (RS256, PS256, ES256 only). No runtime dependency. CI signs in through a real Keycloak (`scripts/e2e-oidc.sh`).
+- **SSO sessions last 8 hours,** so removing someone at the provider ends their access within a working day. Their MAC covers the provider, client, and allowlists, so changing those ends every SSO session at the next start. Token sessions keep 30 days.
+- **A refused SSO sign-in redirects to `/?signin=<code>`,** and the UI shows fixed text for each code. A link cannot inject words, and the server log keeps the detail.
+- **`none` replaces `BINDER_DEV_ANONYMOUS`** and answers only for loopback names and `BINDER_PUBLIC_URL`'s host (421 otherwise), against DNS rebinding. Binder refuses to start when it sees `BINDER_DEV_ANONYMOUS`.
+- **Existing deployments keep working:** with `BINDER_AUTH` unset, `BINDER_AUTH_HEADER` alone still means header mode. `BINDER_AUTH_HEADER` with any other explicit mode stops startup, so auth never changes silently.
+- **The token CLI reads only the data folder,** so a broken auth setting never stops an admin from making a token.
+- Rejected: storing passwords in Binder (a second identity system to secure), and RP-initiated logout at the provider (sign-out ends the Binder session only; the provider's own session is the provider's to end).
+
 ## 2026-11-21: Go public as a new repository (Inbox: binder/go-public)
 
 **Need:** publish Binder without its private history.

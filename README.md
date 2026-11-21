@@ -41,7 +41,9 @@ Run the same command again with new content and a new `note` to see version hist
 ## Run it for a team
 
 - **Tokens.** Each person and each agent gets a named token (`binder token create --name alice`, `--scope read` for read-only). History records who published each version. Revoking a token ends its browser sessions too.
-- **Single sign-on through a proxy.** Behind Tailscale or another identity-aware proxy, Binder can trust the proxy's user header. It accepts the header only from the proxy's address and only for allowed logins.
+- **Single sign-on.** With `BINDER_AUTH=oidc`, people sign in with your identity provider (Keycloak, Okta, Entra ID, Google, and others). Binder never stores a password. Agents keep using tokens.
+- **Or a proxy.** Behind Tailscale or another identity-aware proxy, Binder can trust the proxy's user header. It accepts the header only from the proxy's address and only for allowed logins.
+- **Or nothing, on your laptop.** `BINDER_AUTH=none` turns sign-in off and answers only requests addressed to `localhost`.
 - **Anywhere.** Docker Compose, plain `docker run`, bare Bun, or a cloud container host. [`fly.toml`](fly.toml) is a Fly.io example (not yet deployed by CI).
 - **Previews.** The default image is small and shows a generated cover for each page. The `full` image renders preview images with Chromium. Use it when you trust your publishers. [Why](docs/design.md#previews).
 
@@ -53,11 +55,11 @@ Everything is in [docs/self-hosting.md](docs/self-hosting.md).
 
 - `meta`: JSON with `title`, and optionally `id` (a stable slug; reuse it for a new version), `note`, `summary`, `project`, `domain`, `kind`, `tags`, `source_url` (http or https), `published_at`, `agent`, `host`, `entry`.
 - `file`: one part per file. A single HTML file becomes `index.html`. For a folder, set each part's filename to its relative path.
-- Headers: `X-Binder: 1` on every write, and `Authorization: Bearer <token>` unless a trusted proxy identifies you.
+- Headers: `X-Binder: 1` on every write, and `Authorization: Bearer <token>` unless a trusted proxy identifies you or sign-in is off (`BINDER_AUTH=none`).
 
 The response includes `url` (the viewer link), `version`, and `content_url` (a signed link to this version's files).
 
-Other routes: `GET /api/artifacts`, `GET|PATCH|DELETE /api/artifacts/:id`, `GET /api/artifacts/:id/versions`, `POST /api/artifacts/:id/versions/:n/restore`, `GET /api/artifacts/:id[/versions/:n]/download`, `POST /api/artifacts/:id/thumbnail`, `GET|POST|DELETE /api/session`, `GET /c/...` (signed content), `GET /raw/:id/<path>` (redirects to signed content), `GET /thumb/:id.png`, `GET /healthz`, `GET /llms.txt` (these publish instructions for agents, with the instance's URL filled in).
+Other routes: `GET /api/artifacts`, `GET|PATCH|DELETE /api/artifacts/:id`, `GET /api/artifacts/:id/versions`, `POST /api/artifacts/:id/versions/:n/restore`, `GET /api/artifacts/:id[/versions/:n]/download`, `POST /api/artifacts/:id/thumbnail`, `GET|POST|DELETE /api/session`, `GET /auth/login` and `GET /auth/callback` (OIDC sign-in), `GET /c/...` (signed content), `GET /raw/:id/<path>` (redirects to signed content), `GET /thumb/:id.png`, `GET /healthz`, `GET /llms.txt` (these publish instructions for agents, with the instance's URL filled in).
 
 This is API v1. Changes inside v1 are additive only.
 
@@ -74,7 +76,7 @@ The full threat model is in [docs/design.md](docs/design.md). Report a vulnerabi
 
 ```sh
 bun install
-bun run dev        # http://localhost:8480, auth off, data in ./data
+bun run dev        # http://localhost:8480, BINDER_AUTH=none, data in ./data
 bun run check      # types and tests
 scripts/e2e.sh     # real container and real Chromium
 ```
