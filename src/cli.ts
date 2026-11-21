@@ -1,29 +1,44 @@
 // Admin CLI. It works on the data folder directly, so whoever can run it on the server is the admin.
 // Usage: binder token create --name <name> [--scope read|write] | binder token list | binder token revoke <name|id>
 import { newToken } from "./auth";
-import { loadConfig } from "./config";
+import { loadConfig, type Config } from "./config";
 import { mkdirSync } from "node:fs";
-import { join } from "node:path";
 import { openDb } from "./db";
-import { litestream } from "./replication";
+import { openReplication } from "./replication";
 
 const USAGE = `usage:
   binder token create --name <name> [--scope write|read]   print a new token (shown once)
   binder token list                                        list tokens (never shows secrets)
   binder token revoke <name|id>                            revoke a token and its browser sessions`;
 
-export function run(argv: string[], env: Record<string, string | undefined> = process.env, out = console.log): number {
+export async function run(argv: string[], env: Record<string, string | undefined> = process.env, out = console.log): Promise<number> {
   const [group, cmd, ...rest] = argv;
   if (group !== "token" || !cmd) return (out(USAGE), 2);
   const flag = (f: string) => {
     const i = rest.indexOf(f);
     return i >= 0 ? rest[i + 1] : undefined;
   };
-  // Only the data folder matters here; skip auth checks that apply to the server.
-  // With S3 storage the database is still local (Litestream copies it to S3), so storage settings do not matter.
-  const cfg = loadConfig({ ...env, BINDER_AUTH_HEADER: undefined, BINDER_PREVIEWS: "off", BINDER_STORAGE: undefined, BINDER_SECRET_KEY: undefined });
+  // The server's own parser, so storage and the Litestream socket mean the same thing here. Only the
+  // auth and preview checks are skipped: they apply to the server, not to this command.
+  let cfg: Config;
+  try {
+    cfg = loadConfig({ ...env, BINDER_AUTH_HEADER: undefined, BINDER_PREVIEWS: "off" });
+  } catch (e) {
+    console.error(`binder: ${(e as Error).message}`);
+    return 2;
+  }
   mkdirSync(cfg.dataDir, { recursive: true }); // a fresh install may run the CLI before the server
-  const db = openDb(cfg.dataDir);
+  const db = openDb(cfg.dataDir, { migrate: cfg.storage.kind === "local" });
+  const replication = openReplication(cfg);
+  /** With S3 storage, a token change counts only once Litestream has copied it to S3. */
+  const copied = async (): Promise<string | null> => {
+    try {
+      await replication?.flush();
+      return null;
+    } catch (e) {
+      return (e as Error).message;
+    }
+  };
   const at = new Date().toISOString();
   try {
     if (cmd === "create") {
@@ -34,6 +49,13 @@ export function run(argv: string[], env: Record<string, string | undefined> = pr
       if (db.tokens.list().some((t) => t.name === name && !t.revoked_at)) return (out(`a live token named ${name} exists; revoke it first`), 1);
       const { token, row } = newToken(name, scope, at);
       db.tokens.insert(row);
+      const failed = await copied();
+      if (failed) {
+        // Never hand out a token that a restart could forget: take it back and say so.
+        db.tokens.revoke(row.id, at);
+        console.error(`binder: token not created; copying it to S3 failed: ${failed}`);
+        return 1;
+      }
       out(token);
       return 0;
     }
@@ -49,8 +71,14 @@ export function run(argv: string[], env: Record<string, string | undefined> = pr
       const target = rest[0];
       if (!target) return (out(USAGE), 2);
       const n = db.tokens.revoke(target, at);
-      out(n ? `revoked ${target}` : `no live token named ${target}`);
-      return n ? 0 : 1;
+      if (!n) return (out(`no live token named ${target}`), 1);
+      const failed = await copied();
+      if (failed) {
+        console.error(`binder: ${target} is revoked on this server, but copying that to S3 failed, so a restart could bring the token back. Run the command again. ${failed}`);
+        return 1;
+      }
+      out(`revoked ${target}`);
+      return 0;
     }
     out(USAGE);
     return 2;
@@ -59,27 +87,4 @@ export function run(argv: string[], env: Record<string, string | undefined> = pr
   }
 }
 
-/**
- * With S3 storage, waits until Litestream has copied a token change to S3, so the token survives a
- * task stop right after this command (see src/replication.ts). Returns the exit code.
- */
-export async function confirmCopied(argv: string[], env: Record<string, string | undefined>, code: number): Promise<number> {
-  if (code !== 0 || !env.BINDER_STORAGE?.startsWith("s3://") || !["create", "revoke"].includes(argv[1] ?? "")) return code;
-  if (!env.BINDER_LITESTREAM_SOCKET) {
-    console.error("binder: BINDER_STORAGE is s3 but BINDER_LITESTREAM_SOCKET is not set, so this change was not copied to S3");
-    return 1;
-  }
-  const dbPath = join(loadConfig({ BINDER_DATA_DIR: env.BINDER_DATA_DIR, DATA_DIR: env.DATA_DIR }).dataDir, "binder.sqlite");
-  try {
-    await litestream(env.BINDER_LITESTREAM_SOCKET, dbPath).flush();
-    return 0;
-  } catch (e) {
-    console.error(`binder: the change is saved here but was not copied to S3, so it may be lost if the server stops: ${(e as Error).message}`);
-    return 1;
-  }
-}
-
-if (import.meta.main) {
-  const argv = process.argv.slice(2);
-  process.exit(await confirmCopied(argv, process.env, run(argv)));
-}
+if (import.meta.main) process.exit(await run(process.argv.slice(2)));

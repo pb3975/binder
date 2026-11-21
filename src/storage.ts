@@ -83,6 +83,8 @@ export function localStorage(dataDir: string): Storage {
 }
 
 const UPLOADS_AT_ONCE = 4;
+/** Attempts for a conditional PUT that S3 answers 409 (ConditionalRequestConflict). */
+export const CONFLICT_ATTEMPTS = 4;
 
 /** Objects in one bucket under one prefix. Binder must be the only writer of that prefix. */
 export function s3Storage(cfg: Extract<StorageConfig, { kind: "s3" }>, credentials: () => Promise<Credentials>): Storage {
@@ -99,11 +101,24 @@ export function s3Storage(cfg: Extract<StorageConfig, { kind: "s3" }>, credentia
    */
   const putNew = async (key: string, data: Blob | Uint8Array) => {
     const type = typeOf(key) || "application/octet-stream";
-    const url = (await client()).presign(full(key), { method: "PUT", expiresIn: 300 });
-    const r = await fetch(url, { method: "PUT", body: data as BodyInit, headers: { "if-none-match": "*", "content-type": type } });
-    if (r.status === 412 || r.status === 409)
-      throw new Error(`${full(key)} already exists: another Binder is writing to this prefix. Run one Binder per prefix.`);
-    if (!r.ok) throw new Error(`S3 PUT ${full(key)} answered ${r.status}: ${(await r.text()).slice(0, 200)}`);
+    for (let attempt = 1; ; attempt++) {
+      const url = (await client()).presign(full(key), { method: "PUT", expiresIn: 300 });
+      const r = await fetch(url, { method: "PUT", body: data as BodyInit, headers: { "if-none-match": "*", "content-type": type } });
+      if (r.ok) return;
+      const detail = (await r.text()).slice(0, 200);
+      // 412: the object exists, so someone else wrote this version's file.
+      if (r.status === 412)
+        throw new Error(`${full(key)} already exists: another Binder is writing to this prefix. Run one Binder per prefix.`);
+      // 409: S3 saw a concurrent operation on the key and asks to try again. The retry is the same
+      // conditional PUT, so it can never overwrite anything.
+      if (r.status === 409 && attempt < CONFLICT_ATTEMPTS) {
+        await Bun.sleep(100 * 2 ** (attempt - 1));
+        continue;
+      }
+      if (r.status === 409)
+        throw new Error(`S3 answered 409 (a concurrent operation on ${full(key)}) ${CONFLICT_ATTEMPTS} times; the publish was not stored. ${detail}`);
+      throw new Error(`S3 PUT ${full(key)} answered ${r.status}: ${detail}`);
+    }
   };
 
   return {

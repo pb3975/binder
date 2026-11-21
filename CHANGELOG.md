@@ -17,8 +17,8 @@ All notable changes to Binder are recorded here. The format follows [Keep a Chan
 - `/llms.txt` serves the publish instructions to any agent, with the instance's URL and auth filled in.
 - S3 storage for container hosts with no persistent disk, such as AWS Fargate (`BINDER_STORAGE=s3://<bucket>/<prefix>`). Version files and previews live in S3. The database stays local and Litestream copies it to S3, then restores it on the next start. Credentials come from the standard AWS variables or an ECS task role. See [docs/self-hosting.md](docs/self-hosting.md#storage).
 - `BINDER_SECRET_KEY` sets the signing key from the environment instead of `secret.key`. S3 storage requires it.
-- Both images include Litestream, built from the upstream commit that fixes replicating uncommitted frames after a writer dies mid-commit (issue 1580; no release has it yet). About 55 MB.
-- With S3 storage, every API write and `binder token` change is answered only after the database copy is in S3; a failed copy answers `503`. `/healthz` answers `503` when the copy is more than 60 seconds behind or Litestream cannot be reached.
+- Both images include Litestream, built from an upstream commit with three fixes no release has yet: uncommitted frames replicated after a writer dies mid-commit (issue 1580), the sync target pinned before the upload, and snapshot WAL reads. About 55 MB.
+- With S3 storage, every API write and `binder token` change is answered only after the database copy is in S3; a failed copy answers `503`, and `binder token create` prints no token. `/healthz` answers `503` when the oldest change S3 lacks is more than 60 seconds old, or when Litestream cannot be reached.
 - With S3 storage, version files are created with a conditional PUT, so a second Binder on the same prefix fails loudly instead of overwriting them.
 
 ### Changed

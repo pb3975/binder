@@ -4,7 +4,7 @@ import { authenticator, SESSION_COOKIE, type Principal } from "./auth";
 import { loadConfig, type Config } from "./config";
 import { loadSecret, signer } from "./content";
 import { openDb, sha256, type Artifact, type ArtifactRow, type FileEntry, type Version } from "./db";
-import { litestream, retry, type Replication } from "./replication";
+import { openReplication, retry, type Replication } from "./replication";
 import { openStorage, thumbKey, typeOf, versionKey, type NewFile, type Storage } from "./storage";
 import { thumbnailer } from "./thumbs";
 import { BUILD, VERSION } from "./version";
@@ -105,7 +105,7 @@ export function createApp(cfg: Config, opts: { now?: () => number; storage?: Sto
   const replication =
     opts.replication !== undefined
       ? opts.replication
-      : cfg.storage.kind === "s3" ? litestream(cfg.litestreamSocket!, join(cfg.dataDir, "binder.sqlite")) : null;
+      : openReplication(cfg);
   const db = openDb(cfg.dataDir, { migrate: cfg.storage.kind === "local" });
   const sign = signer(cfg.secretKey ?? loadSecret(cfg.dataDir), now);
   const thumbs = thumbnailer({ db, storage, tmpDir: join(cfg.dataDir, "tmp"), signer: sign, chromium: cfg.chromium, hosts: cfg.previewHosts });
@@ -460,14 +460,11 @@ export function createApp(cfg: Config, opts: { now?: () => number; storage?: Sto
     });
 
   /**
-   * Every API write is confirmed durable before it is answered: with S3 storage, the database copy must be
+   * A successful write is answered only once it is durable: with S3 storage, the database copy must be
    * in S3 first. Otherwise a task stop right after a 201 could lose the write (see src/replication.ts).
    */
-  async function fetch(req: Request, server?: { requestIP(r: Request): { address: string } | null }): Promise<Response> {
-    const res = await route(req, server);
-    const write = req.method !== "GET" && req.method !== "HEAD";
-    const path = new URL(req.url).pathname;
-    if (!replication || !write || res.status >= 400 || !path.startsWith("/api/") || path === "/api/session") return res;
+  async function durable(res: Response): Promise<Response> {
+    if (!replication || res.status >= 400) return res;
     try {
       await replication.flush();
       return res;
@@ -483,7 +480,7 @@ export function createApp(cfg: Config, opts: { now?: () => number; storage?: Sto
     return json({ ok: h.ok, version: VERSION, build: BUILD, replication: h.detail }, h.ok ? 200 : 503);
   }
 
-  async function route(req: Request, server?: { requestIP(r: Request): { address: string } | null }): Promise<Response> {
+  async function fetch(req: Request, server?: { requestIP(r: Request): { address: string } | null }): Promise<Response> {
     const url = new URL(req.url);
     let path: string;
     try {
@@ -514,7 +511,15 @@ export function createApp(cfg: Config, opts: { now?: () => number; storage?: Sto
     const who = result.who;
     if (path === "/api/session" && method === "GET") return json(who);
     if (isWrite && who.scope !== "write") return fail(403, "this identity can read but not write");
+    // Decided here, after the router decoded the path and the caller may write: every write that reaches a
+    // handler waits for the copy, whatever spelling of the URL reached it.
+    const res = await authorized(req, path, method, who);
+    return isWrite ? durable(res) : res;
+  }
 
+  /** Routes for an identified caller. Writes here are made durable by the caller, `fetch`. */
+  async function authorized(req: Request, path: string, method: string, who: Principal): Promise<Response> {
+    let m: RegExpMatchArray | null;
     if (path === "/api/artifacts") {
       if (method === "GET") return json({ artifacts: db.list().map((a) => view(a, originOf(req))) });
       if (method === "POST") return publish(req, who);

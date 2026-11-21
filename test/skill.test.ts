@@ -25,7 +25,7 @@ test("the publish command uses the documented URL, headers, and fields", () => {
 test("the example meta.json publishes as written", async () => {
   const meta = JSON.parse(skill.match(/```json\n([\s\S]*?)\n\s*```/)![1]!);
   const out: string[] = [];
-  run(["token", "create", "--name", "agent"], { BINDER_DATA_DIR: b.dataDir }, (s) => out.push(s));
+  await run(["token", "create", "--name", "agent"], { BINDER_DATA_DIR: b.dataDir }, (s) => out.push(s));
   const r = await fetch(`${b.base}/api/artifacts`, {
     method: "POST",
     headers: { authorization: `Bearer ${out[0]}`, "x-binder": "1" },

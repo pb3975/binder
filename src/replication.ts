@@ -6,6 +6,9 @@
 // keeps failing is invisible while writes still succeed. So Binder asks Litestream to copy and wait
 // (POST /sync with wait) before it answers a write, and /healthz fails when the copy falls behind.
 
+import { join } from "node:path";
+import type { Config } from "./config";
+
 /** How long the copy may lag before /healthz fails. Long enough to ride out a slow S3 request or two. */
 export const MAX_LAG_MS = 60_000;
 const HEALTH_CACHE_MS = 5_000;
@@ -16,6 +19,11 @@ export type Replication = {
   flush(): Promise<void>;
   health(): Promise<Health>;
 };
+
+/** Litestream for S3 storage, or null for local storage. Shared by the server and the CLI. */
+export function openReplication(cfg: Config): Replication | null {
+  return cfg.storage.kind === "s3" ? litestream(cfg.litestreamSocket!, join(cfg.dataDir, "binder.sqlite")) : null;
+}
 
 type SyncAnswer = { status?: string; txid?: number; replicated_txid?: number; error?: string };
 
@@ -34,12 +42,21 @@ export function litestream(socket: string, dbPath: string, opts: { now?: () => n
     } catch (e) {
       throw new Error(`cannot reach Litestream at ${socket}: ${(e as Error).message}`);
     }
-    const body = (await r.json().catch(() => ({}))) as SyncAnswer;
-    if (!r.ok) throw new Error(`Litestream answered ${r.status}: ${body.error ?? "no detail"}`);
-    return { txid: Number(body.txid ?? 0), replicated: Number(body.replicated_txid ?? 0) };
+    const body = (await r.json().catch(() => null)) as SyncAnswer | null;
+    if (!r.ok) throw new Error(`Litestream answered ${r.status}: ${body?.error ?? "no detail"}`);
+    // A reply that is cut short or malformed must never read as "everything is copied".
+    // Binder creates its tables before it asks, so a real database is always at transaction 1 or later.
+    const valid = (n: unknown): n is number => typeof n === "number" && Number.isSafeInteger(n) && n >= 1;
+    const known = wait ? ["synced", "no_change"] : ["synced", "synced_local", "no_change"];
+    if (!body || !known.includes(body.status ?? "") || !valid(body.txid) || !(valid(body.replicated_txid) || body.replicated_txid === 0))
+      throw new Error(`Litestream answered something Binder cannot read: ${JSON.stringify(body).slice(0, 200)}`);
+    return { txid: body.txid, replicated: body.replicated_txid as number };
   }
 
-  let lagSince: number | null = null;
+  // Local transactions that S3 did not have yet, oldest first, with when a probe first saw each one.
+  // The lag is the age of the oldest of them, so a copy that keeps up (even one transaction behind,
+  // under steady writes) stays healthy, and only a copy that stops moving fails.
+  const outstanding: { txid: number; seen: number }[] = [];
   let cached: { at: number; value: Health } | null = null;
 
   return {
@@ -53,15 +70,17 @@ export function litestream(socket: string, dbPath: string, opts: { now?: () => n
       try {
         // Without wait, this only folds new local changes into Litestream's log; it uploads nothing.
         const { txid, replicated } = await sync(false, 5);
-        if (replicated >= txid) {
-          lagSince = null;
-          value = { ok: true, detail: `copied to S3 up to transaction ${txid}` };
-        } else {
-          lagSince ??= now();
-          const lag = now() - lagSince;
+        while (outstanding.length && outstanding[0]!.txid <= replicated) outstanding.shift();
+        if (replicated >= txid) outstanding.length = 0;
+        // Capped, keeping the oldest: the lag only needs the oldest entry.
+        else if ((!outstanding.length || outstanding.at(-1)!.txid < txid) && outstanding.length < 10_000)
+          outstanding.push({ txid, seen: now() });
+        if (!outstanding.length) value = { ok: true, detail: `copied to S3 up to transaction ${txid}` };
+        else {
+          const lag = now() - outstanding[0]!.seen;
           value = {
             ok: lag <= MAX_LAG_MS,
-            detail: `S3 has transaction ${replicated} of ${txid}, behind for ${Math.round(lag / 1000)}s`,
+            detail: `S3 has transaction ${replicated} of ${txid}; the oldest change it lacks is ${Math.round(lag / 1000)}s old`,
           };
         }
       } catch (e) {

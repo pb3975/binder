@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { credentialProvider, type Credentials } from "../src/aws";
 import { storageConfig } from "../src/config";
-import { localStorage, s3Storage, versionKey, type Ledger, type Storage } from "../src/storage";
+import { CONFLICT_ATTEMPTS, localStorage, s3Storage, versionKey, type Ledger, type Storage } from "../src/storage";
 import { owner, publisher, startBinder, writer } from "./helpers";
 
 type Backend = {
@@ -223,5 +223,56 @@ describe.skipIf(!S3)("s3 storage with a second writer on the same prefix", () =>
     firstDone();
     await expect(secondRun).rejects.toThrow(/another Binder is writing to this prefix/);
     for (const f of files("first")) expect(await (await first.read(versionKey("doc", 1, f.path)))!.text()).toBe(`first:${f.path}`);
+  });
+});
+
+// A fake S3 endpoint that answers each conditional PUT from a script, to check 409 and 412 handling
+// without a real store. It also answers the free-number check (an empty listing) and deletes.
+describe("s3 storage conflict answers", () => {
+  const puts: { key: string; ifNoneMatch: string | null }[] = [];
+  let script: number[] = [];
+  const fake = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch(req) {
+      const url = new URL(req.url);
+      if (req.method === "GET") return new Response(`<?xml version="1.0"?><ListBucketResult><Name>b</Name><KeyCount>0</KeyCount><IsTruncated>false</IsTruncated></ListBucketResult>`, { headers: { "content-type": "application/xml" } });
+      if (req.method === "DELETE") return new Response(null, { status: 204 });
+      puts.push({ key: url.pathname, ifNoneMatch: req.headers.get("if-none-match") });
+      const status = script.shift() ?? 200;
+      return new Response(status === 200 ? "" : `<Error><Code>X${status}</Code></Error>`, { status });
+    },
+  });
+  afterAll(() => fake.stop(true));
+  const storage = s3Storage(
+    { kind: "s3", bucket: "binder-data", prefix: "p", region: "us-east-1", endpoint: `http://127.0.0.1:${fake.port}` },
+    async () => ({ accessKeyId: "fake", secretAccessKey: "fake" }),
+  );
+  const one = [{ path: "index.html", data: bytes("x") }];
+
+  test("409 is retried with the same conditional PUT, then succeeds", async () => {
+    puts.length = 0;
+    script = [409, 409, 200];
+    const l = ledger();
+    expect(await storage.addVersion("doc", one, l)).toBe(1);
+    expect(puts).toHaveLength(3);
+    expect(puts.every((p) => p.key === "/binder-data/p/versions/doc/1/index.html" && p.ifNoneMatch === "*")).toBe(true);
+    expect(l.recorded).toEqual([1]);
+  });
+
+  test("409 that never clears fails after a bounded number of tries, with its own message", async () => {
+    puts.length = 0;
+    script = Array(CONFLICT_ATTEMPTS + 2).fill(409);
+    const l = ledger();
+    await expect(storage.addVersion("doc", one, l)).rejects.toThrow(/answered 409.*4 times/);
+    expect(puts).toHaveLength(CONFLICT_ATTEMPTS);
+    expect(l.recorded).toEqual([]);
+  });
+
+  test("412 is another writer: no retry, and the one-writer message", async () => {
+    puts.length = 0;
+    script = [412];
+    await expect(storage.addVersion("doc", one, ledger())).rejects.toThrow(/another Binder is writing to this prefix/);
+    expect(puts).toHaveLength(1);
   });
 });

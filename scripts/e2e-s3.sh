@@ -9,7 +9,7 @@
 #    the artifact, its history, and its files are all still there. Then write, and restore a second time.
 # 4. Wrong S3 credentials, or no BINDER_SECRET_KEY: the container stops instead of starting empty.
 # 5. No keys in the environment: Binder and Litestream both get credentials from a fake ECS endpoint.
-# 6. A write right after a fresh start, then an immediate stop: the write must survive (it once did not).
+# 6. A write right after a fresh start, then an immediate SIGKILL: the write must survive (it once did not).
 # All keys here are fake and work only against this throwaway MinIO.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -47,14 +47,21 @@ wait_healthy() {
 }
 
 docker network create "$name" >/dev/null
+# MINIO_SKIP_CLIENT=yes: without it, Bitnami's setup runs a temporary MinIO to create default buckets,
+# then stops it and starts the real one. A readiness check could pass against the temporary server
+# and the tests then hit the gap (connection refused; measured, and seen in CI). With it, only the
+# real server ever runs, and this script creates the bucket itself.
 docker run -d --name "$name-minio" --network "$name" --network-alias minio \
-  -e MINIO_ROOT_USER=$key_id -e MINIO_ROOT_PASSWORD=$secret -e MINIO_DEFAULT_BUCKETS=binder-e2e "$minio_image" >/dev/null
+  -e MINIO_SKIP_CLIENT=yes -e MINIO_ROOT_USER=$key_id -e MINIO_ROOT_PASSWORD=$secret "$minio_image" >/dev/null
 for i in $(seq 1 60); do
-  docker run --rm --network "$name" "${aws[@]}" "${keys[@]}" --entrypoint bun "$image" \
-    -e "await new Bun.S3Client({ bucket: 'binder-e2e', endpoint: 'http://minio:9000' }).list({ maxKeys: 1 })" 2>/dev/null && break
-  [ "$i" = 60 ] && { echo "MinIO did not start" >&2; exit 1; }
+  docker exec "$name-minio" mc --config-dir /tmp/mc alias set local http://127.0.0.1:9000 $key_id $secret >/dev/null 2>&1 && break
+  [ "$i" = 60 ] && { echo "MinIO did not start" >&2; docker logs "$name-minio" >&2; exit 1; }
   sleep 1
 done
+docker exec "$name-minio" mc --config-dir /tmp/mc mb --ignore-existing local/binder-e2e >/dev/null
+# The check the tests depend on: a signed request, from another container, to the endpoint they use.
+docker run --rm --network "$name" "${aws[@]}" "${keys[@]}" --entrypoint bun "$image" \
+  -e "await new Bun.S3Client({ bucket: 'binder-e2e', endpoint: process.env.AWS_ENDPOINT_URL }).list({ maxKeys: 1 })"
 echo "ok   MinIO is up with bucket binder-e2e"
 
 # 1. Unit tests for both storage backends and the credential provider, with S3 against MinIO.
@@ -132,15 +139,17 @@ docker run --rm --network "$name" "${aws[@]}" "${keys[@]}" --entrypoint bun "$im
   if (!ok) { console.error('FAIL task-role writes are not in the bucket'); process.exit(1); }
   console.log('ok   files and the database replica were written with task-role credentials');"
 
-# 6. Fresh prefix, fresh container. Token and publish as soon as it answers, then stop at once, before
-#    Litestream's first one-second tick. Binder answers a write only once S3 has it, so nothing is lost.
+# 6. Fresh prefix, fresh container. Token and publish as soon as it answers, then kill it at once, before
+#    Litestream's first one-second tick and with no last copy. Binder answers a write only once S3 has it,
+#    so nothing is lost.
 quick=(-e BINDER_STORAGE=s3://binder-e2e/team-c -e BINDER_SECRET_KEY=ZmFrZS1lMmUtc2lnbmluZy1rZXktbm90LWEtc2VjcmV0ISE= "${aws[@]}" "${keys[@]}")
 docker run -d --name "$name-quick" --network "$name" -v "$PWD/test/e2e:/e2e:ro" "${quick[@]}" "$image" >/dev/null
 # One exec, polling every 50 ms, so the token and the publish land within Litestream's first second.
 t4=$(docker exec "$name-quick" sh -c '
   until wget -qO- http://127.0.0.1:8480/healthz >/dev/null 2>&1; do sleep 0.05; done
   t=$(binder token create --name quick) && T="$t" bun /e2e/quick-publish.ts && echo "$t"')
-docker stop -t 30 "$name-quick" >/dev/null && docker rm -v "$name-quick" >/dev/null
+# SIGKILL: Litestream gets no last copy, so only a write that was in S3 before its answer can survive.
+docker kill -s KILL "$name-quick" >/dev/null && docker rm -v "$name-quick" >/dev/null
 docker run -d --name "$name-quick2" --network "$name" "${quick[@]}" "$image" >/dev/null
 wait_healthy "$name-quick2"
 docker exec -e T="$t4" "$name-quick2" bun -e "
