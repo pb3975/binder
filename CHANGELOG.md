@@ -27,6 +27,10 @@ All notable changes to Binder are recorded here. The format follows [Keep a Chan
 
 - `ALLOWED_LOGINS` and `DEV_ALLOW_ANONYMOUS`. Binder refuses to start when it sees them, so auth never changes silently. See [docs/self-hosting.md](docs/self-hosting.md).
 
+### Security
+
+- The preview wrapper (`/render`) encodes the entry file name, so a file name with quotes or tags cannot add markup to the page Chromium screenshots.
+
 ## [0.1.0] - 2026-11-14
 
 Initial private version: one library of agent-built pages behind Tailscale, with previews, filters, and a publish API.
