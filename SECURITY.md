@@ -27,4 +27,4 @@ These are documented trade-offs. See [docs/design.md](docs/design.md).
 
 ## Supported versions
 
-Only the latest release gets security fixes.
+Only the latest minor release gets security fixes, as a new patch release (for example 0.2.1). Releases are listed on the [releases page](https://github.com/pb3975/binder/releases) and in [CHANGELOG.md](CHANGELOG.md).

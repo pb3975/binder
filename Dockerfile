@@ -9,6 +9,7 @@ RUN apk add --no-cache su-exec tini
 WORKDIR /app
 ENV NODE_ENV=production BINDER_DATA_DIR=/data HOST=0.0.0.0 PORT=8480 TMPDIR=/tmp \
     HOME=/tmp XDG_CONFIG_HOME=/tmp/.config XDG_CACHE_HOME=/tmp/.cache
+COPY package.json ./
 COPY src ./src
 COPY public ./public
 COPY docker/entrypoint.sh /usr/local/bin/binder-entrypoint

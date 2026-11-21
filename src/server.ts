@@ -5,6 +5,7 @@ import { loadConfig, type Config } from "./config";
 import { loadSecret, signer } from "./content";
 import { openDb, sha256, versionDir, type Artifact, type ArtifactRow, type FileEntry, type Version } from "./db";
 import { thumbnailer } from "./thumbs";
+import { BUILD, VERSION } from "./version";
 
 const MAX_BYTES = 64 * 1024 * 1024;
 const PUBLIC_DIR = join(import.meta.dir, "..", "public");
@@ -384,7 +385,7 @@ export function createApp(cfg: Config, opts: { now?: () => number } = {}) {
     const method = req.method;
     let m: RegExpMatchArray | null;
 
-    if (path === "/healthz") return new Response("ok");
+    if (path === "/healthz") return json({ ok: true, version: VERSION, build: BUILD });
     if (method === "GET" || method === "HEAD") {
       // The UI shell is public. It holds no data, so a signed-out browser can show the sign-in screen.
       if (path === "/" || path.startsWith("/a/")) return staticFile("index.html");
@@ -477,5 +478,5 @@ if (import.meta.main) {
   });
   const loopback = ["0.0.0.0", "::", "127.0.0.1", "localhost"].includes(cfg.host) ? "127.0.0.1" : cfg.host;
   app.started(`http://${loopback}:${server.port}`);
-  console.log(`binder on http://${server.hostname}:${server.port} (data ${cfg.dataDir}, previews ${app.thumbs.available ? "on" : "off"})`);
+  console.log(`binder ${VERSION}${BUILD ? ` (${BUILD})` : ""} on http://${server.hostname}:${server.port} (data ${cfg.dataDir}, previews ${app.thumbs.available ? "on" : "off"})`);
 }

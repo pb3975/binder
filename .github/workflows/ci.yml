@@ -16,6 +16,8 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: Typecheck and tests (contract, history, migration, auth)
         run: bun run check
+      - name: package.json and CHANGELOG.md agree
+        run: bun scripts/release-check.ts
       - name: Compose file is valid
         # The docker:cli image ships the compose plugin, so this works on runners without it.
         run: docker run --rm -v "$PWD:/w:ro" -w /w docker:27.5-cli docker compose config -q
