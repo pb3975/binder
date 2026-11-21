@@ -164,4 +164,13 @@ describe("binder token with S3 storage", () => {
     expect(out).toEqual([]);
     state.waitFails = false;
   });
+
+  test("running a failed revoke again waits for the copy, so the revocation is confirmed", async () => {
+    calls.length = 0;
+    const out: string[] = [];
+    expect(await run(["token", "revoke", "ci"], env, (s) => out.push(s))).toBe(0);
+    expect(out).toEqual(["revoked ci"]);
+    expect(calls).toEqual([{ path: join(cliDir, "binder.sqlite"), wait: true }]);
+    expect(await run(["token", "revoke", "nobody"], env, () => {})).toBe(1);
+  });
 });

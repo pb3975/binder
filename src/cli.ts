@@ -71,7 +71,10 @@ export async function run(argv: string[], env: Record<string, string | undefined
       const target = rest[0];
       if (!target) return (out(USAGE), 2);
       const n = db.tokens.revoke(target, at);
-      if (!n) return (out(`no live token named ${target}`), 1);
+      // A retry after a failed copy finds the token already revoked here. It must still wait for the
+      // copy, or a restore from S3 could bring the token back.
+      const known = n > 0 || db.tokens.list().some((t) => (t.name === target || t.id === target) && t.revoked_at);
+      if (!known) return (out(`no token named ${target}`), 1);
       const failed = await copied();
       if (failed) {
         console.error(`binder: ${target} is revoked on this server, but copying that to S3 failed, so a restart could bring the token back. Run the command again. ${failed}`);
