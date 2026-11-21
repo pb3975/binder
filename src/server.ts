@@ -133,8 +133,10 @@ export function createApp(cfg: Config, opts: { now?: () => number; storage?: Sto
     return id;
   }
 
-  // Publishes and restores run one at a time. The id, the version number, and the stored files are
-  // decided together, so two requests can never claim the same number while files upload.
+  // Every write to an artifact row runs one at a time: publish, restore, edit, and remove. Publish
+  // and restore read the row, await storage, then write the row back; an edit or removal in between
+  // would be overwritten (a removed artifact could come back). The id, the version number, and the
+  // stored files are also decided together, so two requests never claim the same number.
   let tail: Promise<unknown> = Promise.resolve();
   function serially<T>(fn: () => Promise<T>): Promise<T> {
     const run = tail.then(fn, fn);
@@ -283,14 +285,19 @@ export function createApp(cfg: Config, opts: { now?: () => number; storage?: Sto
   }
 
   async function patch(id: string, req: Request): Promise<Response> {
-    const row = db.row(id);
-    if (!row || row.deleted_at) return fail(404, "not found");
+    if (!db.get(id)) return fail(404, "not found");
     let m: Record<string, unknown>;
     try {
       m = (await req.json()) as Record<string, unknown>;
     } catch {
       return fail(400, "expected a JSON body");
     }
+    return serially(async () => edit(id, m, req));
+  }
+
+  function edit(id: string, m: Record<string, unknown>, req: Request): Response {
+    const row = db.row(id);
+    if (!row || row.deleted_at) return fail(404, "not found");
     if (m.title !== undefined) row.title = text(m.title, 200) || row.title;
     if (m.summary !== undefined) row.summary = text(m.summary, 600);
     if (m.project !== undefined) row.project = kebab(m.project, "general");
@@ -309,11 +316,13 @@ export function createApp(cfg: Config, opts: { now?: () => number; storage?: Sto
     return json(view(db.get(id)!, originOf(req)));
   }
 
-  function remove(id: string): Response {
-    if (!db.get(id)) return fail(404, "not found");
-    // A soft delete: every version stays on disk, and publishing the id again restores it.
-    db.softDelete(id, iso());
-    return json({ deleted: id });
+  function remove(id: string): Promise<Response> {
+    return serially(async () => {
+      if (!db.get(id)) return fail(404, "not found");
+      // A soft delete: every version stays on disk, and publishing the id again restores it.
+      db.softDelete(id, iso());
+      return json({ deleted: id });
+    });
   }
 
   /**
