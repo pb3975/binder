@@ -9,10 +9,12 @@ KEYCLOAK=quay.io/keycloak/keycloak:26.8.2
 image=${1:-binder:e2e-full}
 name=binder-oidc-$$
 docker build -q --target full -t "$image" . >/dev/null
+# Best effort throughout: a container that never started has no logs, and cleanup must still run.
 cleanup() {
+  set +e
   if [ "${failed:-1}" != 0 ]; then
-    echo "--- keycloak"; docker logs "$name-kc" 2>&1 | tail -15
-    echo "--- binder"; docker logs "$name" 2>&1 | tail -20
+    echo "--- keycloak"; docker logs "$name-kc" 2>&1 | tail -15 || true
+    echo "--- binder"; docker logs "$name" 2>&1 | tail -20 || true
   fi
   docker rm -f "$name" "$name-kc" >/dev/null 2>&1 || true
   docker network rm "$name" >/dev/null 2>&1 || true
@@ -21,6 +23,7 @@ trap cleanup EXIT
 
 # Binder and the browser (which runs inside the Binder container) both reach Keycloak as
 # http://keycloak:8080, so the issuer in discovery, in the ID token, and in the browser is the same.
+# That name is not loopback, so plain http needs BINDER_OIDC_ALLOW_HTTP=true: this network is isolated.
 docker network create "$name" >/dev/null
 docker run -d --name "$name-kc" --network "$name" --network-alias keycloak \
   -v "$PWD/test/e2e/keycloak-realm.json:/opt/keycloak/data/import/binder.json:ro" \
@@ -30,7 +33,7 @@ docker run -d --name "$name" --network "$name" -v "$PWD/test/e2e:/e2e:ro" -v "$P
   -e BINDER_AUTH=oidc -e BINDER_PUBLIC_URL=http://127.0.0.1:8480 \
   -e BINDER_OIDC_ISSUER=http://keycloak:8080/realms/binder -e BINDER_OIDC_CLIENT_ID=binder \
   -e BINDER_OIDC_CLIENT_SECRET=binder-e2e-client-secret -e BINDER_ALLOWED_GROUPS=binder-users \
-  -e BINDER_OIDC_LABEL="Sign in with Example SSO" -e BINDER_PREVIEWS=off \
+  -e BINDER_OIDC_LABEL="Sign in with Example SSO" -e BINDER_OIDC_ALLOW_HTTP=true -e BINDER_PREVIEWS=off \
   "$image" >/dev/null
 
 # Keycloak takes 10 to 60 s to import the realm. Wait for its discovery document, not only a port.

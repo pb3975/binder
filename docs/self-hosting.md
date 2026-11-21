@@ -81,7 +81,7 @@ Binder reads all configuration from environment variables. Every variable is opt
 | `BINDER_DATA_DIR` | `./data` (`/data` in the image) | Where the database, the signing key, and every version's files live. Back up this folder. |
 | `HOST` | `127.0.0.1` (`0.0.0.0` in the image) | Address to listen on. |
 | `PORT` | `8480` | Port to listen on. |
-| `BINDER_PUBLIC_URL` | the request's origin | The URL people use, such as `https://binder.example.com`. Set it behind a TLS proxy so returned links are right. |
+| `BINDER_PUBLIC_URL` | the request's origin | The URL people use, such as `https://binder.example.com`. Set it behind a TLS proxy so returned links are right. It must be an `http` or `https` origin with no path: Binder does not support hosting under a subpath such as `/binder`. |
 | `BINDER_PREVIEWS` | `auto` | `auto` renders previews when Chromium is found. `on` requires Chromium. `off` never starts Chromium. |
 | `CHROMIUM` | `/usr/bin/chromium-browser` or `/usr/bin/chromium` | Chromium binary for previews. |
 | `BINDER_PREVIEW_HOSTS` | common public CDNs (cdnjs, jsDelivr, unpkg, esm.sh, Tailwind, jQuery, Google Fonts) | Comma list of the only external hosts a page may load from while its preview renders. `*.example.com` works. Viewing in a browser is not limited. |
@@ -96,8 +96,13 @@ Binder reads all configuration from environment variables. Every variable is opt
 | `BINDER_OIDC_LABEL` | `Sign in with SSO` | Oidc mode. Text on the sign-in button. |
 | `BINDER_ALLOWED_GROUPS` | unset | Oidc mode. Comma list of groups. A member of any of them may sign in. Oidc mode needs this, `BINDER_ALLOWED_USERS`, or both. |
 | `BINDER_OIDC_GROUPS_CLAIM` | `groups` | Oidc mode. The ID token claim that lists the person's groups. |
+| `BINDER_OIDC_SIGNING_ALG` | `RS256` | Oidc mode. The one ID token signature algorithm Binder accepts: `RS256`, `PS256`, or `ES256`. Match your provider's setting. |
+| `BINDER_OIDC_HOSTED_DOMAIN` | unset | Oidc mode, for Google Workspace. The signed `hd` claim must equal this domain. |
+| `BINDER_OIDC_ALLOW_HTTP` | `false` | Oidc mode, **tests only**. `true` allows plain http to a provider that is not on `localhost`, as on an isolated Docker test network. Never set it in production. |
 
-Oidc mode also needs `BINDER_PUBLIC_URL`, because the redirect URI is `${BINDER_PUBLIC_URL}/auth/callback`. Binder never builds it from the request.
+Oidc mode also needs `BINDER_PUBLIC_URL`, because the redirect URI is `${BINDER_PUBLIC_URL}/auth/callback`. Binder never builds it from the request. The issuer, every endpoint the provider's discovery document names, and `BINDER_PUBLIC_URL` must be `https`. Plain `http` works only for `localhost`, `127.0.0.1`, and `[::1]`, or with `BINDER_OIDC_ALLOW_HTTP=true`.
+
+A setting that belongs to another mode stops startup, so a policy you meant to apply is never silently ignored. For example, `BINDER_ALLOWED_GROUPS` with `BINDER_AUTH=none` fails, and so does `BINDER_TRUSTED_PROXIES` outside header mode. A blank `BINDER_AUTH=` fails too; unset it to get the default.
 
 Old names fail loudly, so auth never changes silently. Binder refuses to start when it sees `ALLOWED_LOGINS` or `DEV_ALLOW_ANONYMOUS` (from Binder 0.1), or `BINDER_DEV_ANONYMOUS` (replaced by `BINDER_AUTH=none`).
 
@@ -109,7 +114,7 @@ Old names fail loudly, so auth never changes silently. Binder refuses to start w
 |---|---|---|
 | `token` (default) | A token they paste once | A few people, no single sign-on. The simplest setup that is safe on a network. |
 | `none` | Nothing | Binder runs on your own laptop, for you alone. Never on a shared network or a server. |
-| `oidc` | Your identity provider: Keycloak, Okta, Entra ID, Google, Authentik, and others | A team with single sign-on. Removing someone at the provider ends their access within 8 hours. |
+| `oidc` | Your identity provider: Keycloak, Okta, Entra ID, Google, Authentik, and others | A team with single sign-on. Removing someone at the provider ends their Binder session within 8 hours. |
 | `header` | A proxy that signs them in, such as Tailscale | Binder sits behind `tailscale serve` or an identity-aware proxy that is the only way in. |
 
 ### Tokens (default)
@@ -140,7 +145,7 @@ A web page you visit could try to reach Binder on `localhost` through DNS rebind
 
 ![The sign-in screen in oidc mode: a "Sign in with Example" button, with a token one click away](images/signin-sso.png)
 
-Binder signs people in with the OpenID Connect authorization code flow, with PKCE (S256), `state`, and `nonce`. It verifies the ID token itself: only RS256, PS256, and ES256 signatures, keys from the provider's JWKS, and exact `iss`, `aud`, `exp`, `iat`, and `nonce` checks. It refuses an email the provider marks as not verified (`email_verified: false`).
+Binder signs people in with the OpenID Connect authorization code flow, with PKCE (S256), `state`, and `nonce`. It verifies the ID token itself: one signature algorithm (`BINDER_OIDC_SIGNING_ALG`, RS256 by default), keys from the provider's JWKS, and exact `iss`, `aud`, `sub`, `exp`, `iat`, and `nonce` checks. The audience must be Binder's client ID alone; a token also meant for another audience is refused. Binder refuses an email the provider marks as not verified (`email_verified: false`).
 
 ```sh
 BINDER_AUTH=oidc
@@ -155,9 +160,11 @@ BINDER_OIDC_LABEL='Sign in with Example'
 1. Register Binder at your provider as a web application. The redirect URI is `https://binder.example.com/auth/callback`: your `BINDER_PUBLIC_URL` plus `/auth/callback`.
 2. Open Binder at `BINDER_PUBLIC_URL`. The sign-in cookie is set on that address, so sign-in from another address fails with "took too long".
 3. The person's Binder name is the `email` claim, in lowercase. If there is no email, Binder uses `preferred_username` and matches the allowlist against that.
-4. A sign-in lasts 8 hours. Then the person sees the sign-in screen again. The provider usually signs them in again without asking for a password. Changing the provider, the client, or either allowlist ends every SSO session at the next start.
-5. Sign out ends the Binder session only. The person stays signed in at the provider.
-6. Tokens keep working. People can still paste a token on the sign-in screen under "Use a Binder token instead", and agents publish with tokens.
+4. The SSO session lasts 8 hours. Then the person sees the sign-in screen again. The provider usually signs them in again without asking for a password. Changing the provider, the client, either allowlist, or `BINDER_OIDC_HOSTED_DOMAIN` ends every SSO session at the next start.
+   - Removing someone at the provider ends their Binder session within 8 hours. Content links they already opened are separate: each signed `/c/` link lasts 8 to 9 hours from when Binder issued it. So a link issued just before the session ended can keep working for up to 9 more hours. Removing an artifact ends its links at once.
+5. Two tabs can sign in at once. Each sign-in has its own short-lived cookie (10 minutes). A sign-in that is still at the provider when Binder restarts still finishes, but Binder forgets which sign-ins it has finished, so the provider's one-time code is then the only guard against a replay.
+6. Sign out ends the Binder session only. The person stays signed in at the provider.
+7. Tokens keep working. People can still paste a token on the sign-in screen under "Use a Binder token instead", and agents publish with tokens.
 
 #### Keycloak
 
@@ -167,6 +174,7 @@ BINDER_OIDC_LABEL='Sign in with Example'
 4. On the **Credentials** tab, copy the client secret into `BINDER_OIDC_CLIENT_SECRET`.
 5. To allow a group: on the client's **Client scopes** tab, open `binder-dedicated` and add a mapper **By configuration**, **Group Membership**. Set **Token Claim Name** to `groups`, turn **Full group path** off, and keep **Add to ID token** on. Then set `BINDER_ALLOWED_GROUPS` to the group name, such as `binder-users`.
 6. Set `BINDER_OIDC_ISSUER` to `https://<keycloak host>/realms/<realm>`.
+7. Binder refuses a user whose email is not verified (`email_verified: false`), even when the user is in the group. Verify each user's email in Keycloak (**Users**, then **Email verified**), or turn on **Verify email** for the realm.
 
 With **Full group path** on, the claim says `/binder-users`, and Binder compares group names exactly. CI signs in through a real Keycloak with the realm in [`test/e2e/keycloak-realm.json`](../test/e2e/keycloak-realm.json) (`scripts/e2e-oidc.sh`).
 
@@ -175,8 +183,8 @@ With **Full group path** on, the claim says `/binder-users`, and Binder compares
 CI tests Keycloak only. These notes are not tested, and providers change their consoles, so check each against your provider's documentation and its `/.well-known/openid-configuration`.
 
 - **Okta.** Issuer: `https://<your-org>.okta.com/oauth2/default` for the default authorization server, or `https://<your-org>.okta.com` for the org server. Create an OIDC **Web Application**. For groups, add a `groups` claim to the ID token in the authorization server's **Claims** (with a filter such as "Matches regex `.*`"), or on the org server, set the app's **Groups claim**.
-- **Microsoft Entra ID.** Issuer: `https://login.microsoftonline.com/<tenant-id>/v2.0`. Register an app with a **Web** redirect URI. The `groups` claim holds group object IDs (GUIDs), not names, so put the IDs in `BINDER_ALLOWED_GROUPS`. Turn it on under **Token configuration**, **Add groups claim**. Entra does not send `email_verified`, and `email` can be empty, so Binder then uses `preferred_username` (the sign-in name). Prefer `BINDER_ALLOWED_USERS='*@your-domain'` or groups.
-- **Google.** Issuer: `https://accounts.google.com`. Create an OAuth client of type **Web application**. Google sends no groups claim, so use `BINDER_ALLOWED_USERS`, such as `*@example.com` for a Workspace domain.
+- **Microsoft Entra ID.** Issuer: `https://login.microsoftonline.com/<tenant-id>/v2.0`. Register an app with a **Web** redirect URI. **Allow by group, not by email domain.** Entra does not send `email_verified`, and a user or a guest can have an `email` or `preferred_username` in a domain your tenant does not own, so `BINDER_ALLOWED_USERS='*@your-domain'` is not safe here. Turn on the groups claim under **Token configuration**, **Add groups claim**. It holds group object IDs (GUIDs), not names, so put the IDs in `BINDER_ALLOWED_GROUPS`. Exact emails of known people are fine too.
+- **Google.** Issuer: `https://accounts.google.com`. Create an OAuth client of type **Web application**. Google sends no groups claim. To admit a Google Workspace domain, set `BINDER_OIDC_HOSTED_DOMAIN=example.com` and `BINDER_ALLOWED_USERS='*'`: Google signs the account's Workspace domain into the `hd` claim, and Binder requires it to match. Do not use `*@example.com` alone with Google, because an email suffix does not prove the account belongs to that Workspace. For a few people, list their exact emails.
 - **Authentik, Zitadel, Auth0, and others.** Use the issuer URL that the provider's `/.well-known/openid-configuration` reports. Binder refuses to start sign-in when the discovered issuer differs from `BINDER_OIDC_ISSUER`, even by a trailing slash.
 
 If sign-in fails, Binder logs the reason (`sign-in refused (...)`) and shows the person a short message.

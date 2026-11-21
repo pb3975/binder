@@ -238,9 +238,46 @@ describe("configuration", () => {
       mode: "oidc", issuer: "https://id.example.com/realms/team", clientId: "binder", clientSecret: null,
       scopes: "openid email profile", label: "Sign in with SSO", allowedUsers: [], allowedGroups: ["binder-users"],
       groupsClaim: "groups", redirectUri: "https://binder.example.com/auth/callback",
+      allowHttp: false, signingAlg: "RS256", hostedDomain: null,
     });
     expect(loadConfig({ ...ok, BINDER_OIDC_CLIENT_SECRET: "s", BINDER_OIDC_LABEL: "Sign in with Example", BINDER_OIDC_GROUPS_CLAIM: "roles", BINDER_ALLOWED_USERS: "A@Example.com" }).auth)
       .toMatchObject({ clientSecret: "s", label: "Sign in with Example", groupsClaim: "roles", allowedUsers: ["a@example.com"] });
+  });
+  test("a blank BINDER_AUTH, or a setting for another mode, stops startup instead of dropping a policy", () => {
+    expect(() => loadConfig({ BINDER_AUTH: "" })).toThrow(/BINDER_AUTH is set but empty/);
+    expect(() => loadConfig({ BINDER_AUTH: "  " })).toThrow(/BINDER_AUTH is set but empty/);
+    expect(() => loadConfig({ BINDER_AUTH: "none", BINDER_ALLOWED_GROUPS: "binder-users" })).toThrow(/BINDER_ALLOWED_GROUPS applies only with BINDER_AUTH=oidc/);
+    expect(() => loadConfig({ BINDER_AUTH: "none", BINDER_ALLOWED_USERS: "a@example.com" })).toThrow(/BINDER_ALLOWED_USERS applies only/);
+    expect(() => loadConfig({ BINDER_ALLOWED_USERS: "a@example.com" })).toThrow(/BINDER_AUTH=token/);
+    expect(() => loadConfig({ BINDER_OIDC_ISSUER: "https://id.example.com" })).toThrow(/BINDER_OIDC_ISSUER applies only with BINDER_AUTH=oidc/);
+    expect(() => loadConfig({ BINDER_AUTH: "header", BINDER_AUTH_HEADER: "Remote-User", BINDER_ALLOWED_USERS: "*", BINDER_OIDC_LABEL: "x" })).toThrow(/BINDER_OIDC_LABEL/);
+    expect(() => loadConfig({ BINDER_TRUSTED_PROXIES: "172.17.0.1" })).toThrow(/BINDER_TRUSTED_PROXIES applies only with BINDER_AUTH=header/);
+    expect(loadConfig({ BINDER_ALLOWED_GROUPS: "" }).auth).toEqual({ mode: "token" }); // blank is not a policy
+  });
+  test("BINDER_PUBLIC_URL must be an http(s) origin: no path, no other scheme", () => {
+    expect(loadConfig({ BINDER_PUBLIC_URL: "https://binder.example.com/" }).publicUrl).toBe("https://binder.example.com");
+    expect(loadConfig({ BINDER_PUBLIC_URL: "http://localhost:8480" }).publicUrl).toBe("http://localhost:8480");
+    expect(() => loadConfig({ BINDER_PUBLIC_URL: "https://example.com/binder" })).toThrow(/does not support a subpath/);
+    expect(() => loadConfig({ BINDER_PUBLIC_URL: "https://example.com/?x=1" })).toThrow(/no path/);
+    expect(() => loadConfig({ BINDER_PUBLIC_URL: "ftp://binder.example.com" })).toThrow(/http or https/);
+    expect(() => loadConfig({ BINDER_PUBLIC_URL: "binder.example.com" })).toThrow(/not a URL/);
+  });
+  test("oidc mode wants https for the issuer and BINDER_PUBLIC_URL, except loopback or the test-only escape hatch", () => {
+    const ok = { BINDER_AUTH: "oidc", BINDER_OIDC_ISSUER: "https://id.example.com", BINDER_OIDC_CLIENT_ID: "binder", BINDER_PUBLIC_URL: "https://binder.example.com", BINDER_ALLOWED_USERS: "*" };
+    expect(() => loadConfig({ ...ok, BINDER_OIDC_ISSUER: "http://id.example.com" })).toThrow(/BINDER_OIDC_ISSUER must be https/);
+    expect(() => loadConfig({ ...ok, BINDER_OIDC_ISSUER: "ftp://id.example.com" })).toThrow(/BINDER_OIDC_ISSUER must be https/);
+    expect(() => loadConfig({ ...ok, BINDER_PUBLIC_URL: "http://binder.example.com" })).toThrow(/https BINDER_PUBLIC_URL/);
+    for (const local of ["http://localhost:8080/realms/x", "http://127.0.0.1:8080", "http://[::1]:8080"])
+      expect(loadConfig({ ...ok, BINDER_OIDC_ISSUER: local, BINDER_PUBLIC_URL: "http://127.0.0.1:8480" }).auth).toMatchObject({ issuer: local, allowHttp: false });
+    expect(loadConfig({ ...ok, BINDER_OIDC_ISSUER: "http://keycloak:8080/realms/x", BINDER_PUBLIC_URL: "http://binder:8480", BINDER_OIDC_ALLOW_HTTP: "true" }).auth)
+      .toMatchObject({ allowHttp: true });
+    expect(() => loadConfig({ ...ok, BINDER_OIDC_ALLOW_HTTP: "yes" })).toThrow(/true or false/);
+  });
+  test("BINDER_OIDC_SIGNING_ALG takes one of RS256, PS256, ES256, and BINDER_OIDC_HOSTED_DOMAIN a domain", () => {
+    const ok = { BINDER_AUTH: "oidc", BINDER_OIDC_ISSUER: "https://accounts.example.com", BINDER_OIDC_CLIENT_ID: "binder", BINDER_PUBLIC_URL: "https://binder.example.com", BINDER_ALLOWED_USERS: "*" };
+    expect(loadConfig({ ...ok, BINDER_OIDC_SIGNING_ALG: "es256", BINDER_OIDC_HOSTED_DOMAIN: "Example.com" }).auth).toMatchObject({ signingAlg: "ES256", hostedDomain: "example.com" });
+    for (const alg of ["HS256", "none", "RS512"]) expect(() => loadConfig({ ...ok, BINDER_OIDC_SIGNING_ALG: alg })).toThrow(/BINDER_OIDC_SIGNING_ALG/);
+    expect(() => loadConfig({ ...ok, BINDER_OIDC_HOSTED_DOMAIN: "@example.com" })).toThrow(/not a domain/);
   });
   test("the token CLI ignores auth settings, so an admin can always make a token", async () => {
     const { mkdtempSync } = await import("node:fs");

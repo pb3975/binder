@@ -28,7 +28,15 @@ export async function fakeProvider(opts: { clientId: string; clientSecret: strin
   };
   const published = new Set(["rs-1", "ps-1", "es-1"]);
   const codes = new Map<string, { challenge: string; idToken: string; redirectUri: string }>();
-  const state = { jwksHits: 0, advertisedIssuer: null as string | null, lastToken: null as TokenRequest | null };
+  const state = {
+    jwksHits: 0,
+    advertisedIssuer: null as string | null,
+    /** Where discovery says the endpoints are, when not the issuer itself. */
+    endpointBase: null as string | null,
+    /** The token endpoint's JSON for an ID token; the default is a complete RFC 6749 5.1 response. */
+    tokenResponse: (idToken: string): object => ({ access_token: "synthetic-access", token_type: "Bearer", id_token: idToken }),
+    lastToken: null as TokenRequest | null,
+  };
 
   const server = Bun.serve({
     port: 0,
@@ -38,9 +46,9 @@ export async function fakeProvider(opts: { clientId: string; clientSecret: strin
       if (path === "/.well-known/openid-configuration")
         return Response.json({
           issuer: state.advertisedIssuer ?? issuer,
-          authorization_endpoint: `${issuer}/authorize?prompt=login`,
-          token_endpoint: `${issuer}/token`,
-          jwks_uri: `${issuer}/jwks`,
+          authorization_endpoint: `${state.endpointBase ?? issuer}/authorize?prompt=login`,
+          token_endpoint: `${state.endpointBase ?? issuer}/token`,
+          jwks_uri: `${state.endpointBase ?? issuer}/jwks`,
         });
       if (path === "/jwks") {
         state.jwksHits++;
@@ -59,20 +67,23 @@ export async function fakeProvider(opts: { clientId: string; clientSecret: strin
         if (!c || form.get("grant_type") !== "authorization_code" || form.get("redirect_uri") !== c.redirectUri ||
             createHash("sha256").update(verifier).digest("base64url") !== c.challenge)
           return Response.json({ error: "invalid_grant" }, { status: 400 });
-        return Response.json({ access_token: "synthetic-access", token_type: "Bearer", id_token: c.idToken });
+        return Response.json(state.tokenResponse(c.idToken));
       }
       return new Response("not found", { status: 404 });
     },
   });
   const issuer: string = `http://127.0.0.1:${server.port}`;
 
-  /** Signs claims as a JWS. `alg: "none"` and `"HS256"` make the tokens Binder must refuse. */
-  async function sign(claims: object, o: { key?: keyof typeof keys; alg?: string; kid?: string | null } = {}) {
+  /**
+   * Signs claims as a JWS. `alg: "none"` and `"HS256"` make the tokens Binder must refuse.
+   * Claims may be a raw JSON string, for values JSON.stringify cannot write (such as 1e400).
+   */
+  async function sign(claims: object | string, o: { key?: keyof typeof keys; alg?: string; kid?: string | null; header?: object } = {}) {
     const key = keys[o.key ?? "rs"];
     const alg = o.alg ?? key.alg;
-    const header: Record<string, string> = { alg, typ: "JWT" };
+    const header: Record<string, unknown> = { alg, typ: "JWT", ...o.header };
     if (o.kid !== null) header.kid = o.kid ?? key.kid;
-    const input = `${b64(JSON.stringify(header))}.${b64(JSON.stringify(claims))}`;
+    const input = `${b64(JSON.stringify(header))}.${b64(typeof claims === "string" ? claims : JSON.stringify(claims))}`;
     if (alg === "none") return `${input}.`;
     if (alg === "HS256") return `${input}.${createHmac("sha256", opts.clientSecret ?? "x").update(input).digest("base64url")}`;
     const sig = await crypto.subtle.sign(PARAMS[key.alg].sign, key.priv, new TextEncoder().encode(input));
@@ -90,6 +101,10 @@ export async function fakeProvider(opts: { clientId: string; clientSecret: strin
       return code;
     },
     rotate: () => published.add("rs-2"),
+    /** Replaces the key material behind kid rs-1, as a provider that rotates without a new kid. */
+    async rekey() {
+      keys.rs = await makeKey("rs-1", "RS256");
+    },
     stop: () => server.stop(true),
   };
 }

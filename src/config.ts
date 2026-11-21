@@ -51,7 +51,20 @@ export type OidcAuth = {
   groupsClaim: string;
   /** `${BINDER_PUBLIC_URL}/auth/callback`. */
   redirectUri: string;
+  /** Tests only: allow plain http to a provider that is not on loopback. */
+  allowHttp: boolean;
+  /** The one ID token signature algorithm accepted. */
+  signingAlg: SigningAlg;
+  /** When set, the ID token's `hd` claim (Google Workspace) must equal it. */
+  hostedDomain: string | null;
 };
+export const SIGNING_ALGS = ["RS256", "PS256", "ES256"] as const;
+export type SigningAlg = (typeof SIGNING_ALGS)[number];
+
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+/** https, or plain http only to loopback or when BINDER_OIDC_ALLOW_HTTP=true (an isolated test network). */
+export const secureEnough = (u: URL, allowHttp: boolean) =>
+  u.protocol === "https:" || (u.protocol === "http:" && (allowHttp || LOOPBACK_HOSTS.has(u.hostname)));
 
 /** Public CDNs that agent-built pages commonly load scripts, styles, and fonts from. */
 export const DEFAULT_PREVIEW_HOSTS = [
@@ -78,7 +91,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   for (const h of previewHosts)
     if (!/^(\*\.)?[a-z0-9-]+(\.[a-z0-9-]+)+$/i.test(h)) throw new Error(`BINDER_PREVIEW_HOSTS: not a host name: ${h}`);
 
-  const publicUrl = env.BINDER_PUBLIC_URL ? new URL(env.BINDER_PUBLIC_URL).origin : null;
+  const publicUrl = env.BINDER_PUBLIC_URL?.trim() ? parsePublicUrl(env.BINDER_PUBLIC_URL.trim()) : null;
   const port = Number(env.PORT ?? 8480);
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error(`PORT is not a port number: ${env.PORT}`);
 
@@ -103,13 +116,38 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   };
 }
 
+/** BINDER_PUBLIC_URL must be an http(s) origin. Binder serves from the root, so a path would break every link. */
+function parsePublicUrl(raw: string): string {
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    throw new Error(`BINDER_PUBLIC_URL is not a URL: ${raw}`);
+  }
+  if (u.protocol !== "https:" && u.protocol !== "http:") throw new Error(`BINDER_PUBLIC_URL must be http or https, not ${u.protocol}`);
+  if (u.pathname !== "/" || u.search || u.hash || u.username || u.password)
+    throw new Error(`BINDER_PUBLIC_URL must be an origin with no path, such as https://binder.example.com. Binder does not support a subpath: ${raw}`);
+  return u.origin;
+}
+
 function loadAuth(env: Record<string, string | undefined>, publicUrl: string | null, trustedProxies: string[]): AuthConfig {
+  if (env.BINDER_AUTH !== undefined && !env.BINDER_AUTH.trim())
+    throw new Error(`BINDER_AUTH is set but empty. Set it to ${AUTH_MODES.join(", ")}, or unset it.`);
   const header = env.BINDER_AUTH_HEADER?.trim() || null;
   // Deployments from before BINDER_AUTH set only BINDER_AUTH_HEADER.
   const mode = (env.BINDER_AUTH?.trim().toLowerCase() || (header ? "header" : "token")) as AuthMode;
   if (!AUTH_MODES.includes(mode)) throw new Error(`BINDER_AUTH must be one of ${AUTH_MODES.join(", ")}, not ${env.BINDER_AUTH}`);
-  if (header && mode !== "header")
-    throw new Error(`BINDER_AUTH_HEADER is set but BINDER_AUTH=${mode}. Set BINDER_AUTH=header, or unset BINDER_AUTH_HEADER.`);
+  // A setting for another mode would be silently ignored, and with it a policy someone meant to apply.
+  const owners: [string, AuthMode[]][] = [
+    ["BINDER_AUTH_HEADER", ["header"]],
+    ["BINDER_TRUSTED_PROXIES", ["header"]],
+    ["BINDER_ALLOWED_USERS", ["header", "oidc"]],
+    ["BINDER_ALLOWED_GROUPS", ["oidc"]],
+    ...Object.keys(env).filter((k) => k.startsWith("BINDER_OIDC_")).map((k): [string, AuthMode[]] => [k, ["oidc"]]),
+  ];
+  for (const [k, modes] of owners)
+    if (env[k]?.trim() && !modes.includes(mode))
+      throw new Error(`${k} applies only with BINDER_AUTH=${modes.join(" or ")}, but BINDER_AUTH=${mode}. Unset ${k}, or change BINDER_AUTH.`);
   const allowedUsers = list(env.BINDER_ALLOWED_USERS).map((u) => u.toLowerCase());
 
   if (mode === "token" || mode === "none") return { mode };
@@ -129,7 +167,16 @@ function loadAuth(env: Record<string, string | undefined>, publicUrl: string | n
   } catch {
     throw new Error(`BINDER_OIDC_ISSUER is not a URL: ${issuer}`);
   }
-  if (issuerUrl.protocol !== "https:" && issuerUrl.protocol !== "http:") throw new Error("BINDER_OIDC_ISSUER must be an https URL");
+  const allowHttp = (env.BINDER_OIDC_ALLOW_HTTP?.trim() || "false").toLowerCase();
+  if (allowHttp !== "true" && allowHttp !== "false") throw new Error("BINDER_OIDC_ALLOW_HTTP must be true or false");
+  const http = allowHttp === "true";
+  const plain = "Plain http works only for localhost, or with BINDER_OIDC_ALLOW_HTTP=true on an isolated test network.";
+  if (!secureEnough(issuerUrl, http)) throw new Error(`BINDER_OIDC_ISSUER must be https: ${issuer}. ${plain}`);
+  if (!secureEnough(new URL(publicUrl), http)) throw new Error(`BINDER_AUTH=oidc needs an https BINDER_PUBLIC_URL, so cookies are Secure: ${publicUrl}. ${plain}`);
+  const signingAlg = (env.BINDER_OIDC_SIGNING_ALG?.trim() || "RS256").toUpperCase() as SigningAlg;
+  if (!SIGNING_ALGS.includes(signingAlg)) throw new Error(`BINDER_OIDC_SIGNING_ALG must be one of ${SIGNING_ALGS.join(", ")}`);
+  const hostedDomain = env.BINDER_OIDC_HOSTED_DOMAIN?.trim().toLowerCase() || null;
+  if (hostedDomain && !/^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(hostedDomain)) throw new Error(`BINDER_OIDC_HOSTED_DOMAIN is not a domain: ${hostedDomain}`);
   const allowedGroups = list(env.BINDER_ALLOWED_GROUPS);
   if (!allowedUsers.length && !allowedGroups.length)
     throw new Error("BINDER_AUTH=oidc needs BINDER_ALLOWED_USERS (emails, *@domain, or *) or BINDER_ALLOWED_GROUPS, or both");
@@ -147,6 +194,9 @@ function loadAuth(env: Record<string, string | undefined>, publicUrl: string | n
     groupsClaim: env.BINDER_OIDC_GROUPS_CLAIM?.trim() || "groups",
     // Built from configuration only, never from a request's Host header.
     redirectUri: `${publicUrl}/auth/callback`,
+    allowHttp: http,
+    signingAlg,
+    hostedDomain,
   };
 }
 

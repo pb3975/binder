@@ -38,7 +38,7 @@ export function authenticator(cfg: Config, db: Db, sign: Signer, now: () => numb
   // SSO sessions are signed over the provider and allowlist settings, so changing either ends them all.
   const oidcScope =
     a.mode === "oidc"
-      ? hashSecret(JSON.stringify([a.issuer, a.clientId, a.allowedUsers, a.allowedGroups, a.groupsClaim])).slice(0, 16)
+      ? hashSecret(JSON.stringify([a.issuer, a.clientId, a.allowedUsers, a.allowedGroups, a.groupsClaim, a.hostedDomain])).slice(0, 16)
       : null;
 
   const live = (id: string) => {

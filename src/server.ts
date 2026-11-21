@@ -3,7 +3,7 @@ import { join, normalize } from "node:path";
 import { authenticator, readCookie, SESSION_COOKIE, type Principal } from "./auth";
 import { loadConfig, type Config } from "./config";
 import { loadSecret, signer } from "./content";
-import { LOGIN_COOKIE, oidcClient } from "./oidc";
+import { oidcClient } from "./oidc";
 import { openDb, sha256, versionDir, type Artifact, type ArtifactRow, type FileEntry, type Version } from "./db";
 import { thumbnailer } from "./thumbs";
 import { BUILD, VERSION } from "./version";
@@ -453,13 +453,14 @@ export function createApp(cfg: Config, opts: { now?: () => number } = {}) {
         return go("/?signin=failed");
       }
     }
-    const r = await oidc.callback(url.searchParams, readCookie(req, LOGIN_COOKIE));
+    const r = await oidc.callback(url.searchParams, (name) => readCookie(req, name));
+    const clear = r.clear ? [r.clear] : [];
     if (!r.ok) {
       console.warn(`sign-in refused (${r.reason}): ${r.detail}`);
-      return go(`/?signin=${r.reason}`, oidc.clearLogin());
+      return go(`/?signin=${r.reason}`, ...clear);
     }
     const { value, maxAge } = auth.oidcSessionValue(r.user);
-    return go(r.next, oidc.clearLogin(), sessionCookie(req, value, maxAge));
+    return go(r.next, ...clear, sessionCookie(req, value, maxAge));
   }
 
   async function fetch(req: Request, server?: { requestIP(r: Request): { address: string } | null }): Promise<Response> {
@@ -568,8 +569,8 @@ if (import.meta.main) {
   const app = createApp(cfg);
   if (cfg.auth.mode === "none")
     console.warn("BINDER_AUTH=none: anyone who can reach Binder can read and publish. Use it only on your own machine.");
-  if (cfg.auth.mode === "oidc" && !cfg.auth.issuer.startsWith("https:"))
-    console.warn(`BINDER_OIDC_ISSUER is not https (${cfg.auth.issuer}). Use plain http only for a test provider.`);
+  if (cfg.auth.mode === "oidc" && cfg.auth.allowHttp)
+    console.warn("BINDER_OIDC_ALLOW_HTTP=true: sign-in may use plain http. Use it only on an isolated test network.");
   if (cfg.auth.mode === "token" && !app.db.tokens.list().some((t) => !t.revoked_at))
     console.log("No tokens yet. Create one with: binder token create --name <you>   (in Docker: docker compose exec binder binder token create --name <you>)");
   const server = Bun.serve({
