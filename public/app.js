@@ -469,7 +469,7 @@ function openHelp() {
     `  -H 'X-Binder: 1' \\`,
     ...(state.me?.via === "header" || state.me?.via === "none" ? [] : [`  -H "Authorization: Bearer $BINDER_TOKEN" \\`]),
     `  -F 'meta={"id":"agent-loops","title":"Agent Loops vs Graphs",`,
-    `           "project":"fleet","kind":"explainer",`,
+    `           "project":"research","kind":"explainer",`,
     `           "summary":"One sentence on what it is.",`,
     `           "note":"What changed in this version."}' \\`,
     `  -F 'file=@explainer.html'`,
