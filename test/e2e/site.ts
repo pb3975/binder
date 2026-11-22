@@ -106,6 +106,10 @@ for (const [width, height] of [[1280, 800], [390, 844]] as const) {
     const tag = `${width}px ${dark ? "dark" : "light"}`;
     const { b, log } = await open({ width, height, dark });
     try {
+      const stray = await b.evaluate<string[]>(`[...document.body.childNodes].filter((n) => n.nodeType === 3 && n.textContent.trim()).map((n) => n.textContent.trim().slice(0, 40))`);
+      check(`${tag}: no stray text outside the page's elements`, stray.length === 0, stray.join(" | "));
+      const first = await b.evaluate<string>(`document.querySelector(".top").getBoundingClientRect().top`);
+      check(`${tag}: the top bar is at the top of the page`, Number(first) === 0, String(first));
       const overflow = await b.evaluate<number>(`document.documentElement.scrollWidth - innerWidth`);
       check(`${tag}: no horizontal overflow`, overflow <= 0, `${overflow}px`);
       const hero = await b.evaluate<{ w: number; src: string }>(
@@ -134,7 +138,8 @@ for (const [width, height] of [[1280, 800], [390, 844]] as const) {
       await Bun.sleep(200); // let the 120 ms background transition finish
       const lowOld = await b.evaluate<string[]>(CONTRAST);
       check(`${tag}: all text meets AA with an old version open`, lowOld.length === 0, lowOld.slice(0, 5).join(" | "));
-      await b.evaluate(`document.querySelector("#vm-latest").click(); document.activeElement.blur()`);
+      await b.evaluate(`document.querySelector("#vm-latest").click(); document.activeElement.blur(); scrollTo(0, 0)`);
+      await Bun.sleep(200); // focus moved to v3 and scrolled; let the page settle at the top
       const mock = await b.evaluate<number>(`(() => { const v = document.querySelector("#viewer-mock"); return v.scrollWidth - v.clientWidth; })()`);
       check(`${tag}: the history model fits its box`, mock <= 0, `${mock}px`);
 
@@ -215,6 +220,8 @@ for (const [width, height] of [[1280, 800], [390, 844]] as const) {
     check("history: v1 is pressed and v3 is not", await b.evaluate(
       `document.querySelector('[data-ver="1"]').getAttribute("aria-pressed") === "true" && document.querySelector('[data-ver="3"]').getAttribute("aria-pressed") === "false"`));
     check("history: the change is announced", (await b.evaluate<string>(`document.querySelector("#vm-status").textContent`)) === banner);
+    await b.evaluate(`document.querySelector("#history").scrollIntoView()`);
+    await Bun.sleep(200);
     await shot(b, "site-history-v1", false);
     await b.evaluate(`document.querySelector("#vm-latest").click()`);
     check("history: back to latest restores the tiles", (await b.evaluate<string>(tiles)) === latest);

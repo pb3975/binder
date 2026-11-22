@@ -68,6 +68,11 @@ describe("build-site.sh", () => {
 });
 
 describe("landing page", () => {
+  test("every attribute value is plain text, so no markup leaks into an attribute", () => {
+    for (const t of tags()) for (const [k, v] of Object.entries(t.attrs)) expect(`${t.name} ${k}=${v}`).not.toMatch(/[<>]/);
+    expect(html.match(/<head>[\s\S]*<\/head>/)?.[0]).not.toMatch(/<(span|div|p|a)\b/);
+  });
+
   test("has the exact CSP, and no inline style or script to need an exception", () => {
     const meta = tags().find((t) => t.name === "meta" && t.attrs["http-equiv"] === "Content-Security-Policy");
     expect(meta?.attrs.content).toBe(CSP);
