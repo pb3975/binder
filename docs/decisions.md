@@ -2,6 +2,24 @@
 
 Newest first. Each entry says what was decided and why. [design.md](design.md) has the full reasoning.
 
+## 2026-11-21: Four auth modes: token, none, oidc, header
+
+**Need:** a team with single sign-on can use Binder without a proxy in front, and one person on a laptop can use it without tokens. Agents keep working the same way everywhere.
+
+- **`BINDER_AUTH` = `token` (default), `none`, `oidc`, or `header`.** Bearer tokens work in every mode, because agents always use tokens. Binder never stores a password; in oidc mode the identity provider owns passwords and MFA.
+- **Built-in OIDC, reversing the 2026-11-20 rejection.** The proxy recipe needed a second service and three easy-to-miss rules. Binder does the authorization code flow with PKCE (S256), `state`, and `nonce`, and verifies the ID token itself with Web Crypto (RS256, PS256, ES256 only). No runtime dependency. CI signs in through a real Keycloak (`scripts/e2e-oidc.sh`).
+- **SSO sessions last 8 hours,** so removing someone at the provider ends their Binder session within a working day. Signed content links they already hold last 8 to 9 hours on their own. The session MAC covers the provider, client, allowlists, and hosted domain, so changing those ends every SSO session at the next start. Token sessions keep 30 days.
+- **Strict OIDC checks after a cross-model review against OIDC Core, RFC 6749, and RFC 7636:** the audience must be Binder's client ID alone; `sub`, `access_token`, and `token_type` Bearer are required; any `crit` header is refused; one configured signing algorithm (`BINDER_OIDC_SIGNING_ALG`, RS256 by default). The JWKS cache lasts an hour, with a rate-limited refetch after a bad signature.
+- **https everywhere in oidc mode:** the issuer, discovered endpoints, and `BINDER_PUBLIC_URL`, except loopback. `BINDER_OIDC_ALLOW_HTTP=true` is the one escape hatch, for isolated test networks such as the Keycloak e2e.
+- **Google Workspace by the signed `hd` claim** (`BINDER_OIDC_HOSTED_DOMAIN`), not by an email suffix. Entra ID by group, because its email claims are not verified.
+- **One login cookie per sign-in,** named after its state, so concurrent tabs do not clobber each other.
+- **Configuration that would be ignored stops startup:** a blank `BINDER_AUTH`, any setting that belongs to another mode, and a `BINDER_PUBLIC_URL` that is not an http(s) origin. Subpath hosting is not supported.
+- **A refused SSO sign-in redirects to `/?signin=<code>`,** and the UI shows fixed text for each code. A link cannot inject words, and the server log keeps the detail.
+- **`none` replaces `BINDER_DEV_ANONYMOUS`** and answers only for loopback names and `BINDER_PUBLIC_URL`'s host (421 otherwise), against DNS rebinding. Binder refuses to start when it sees `BINDER_DEV_ANONYMOUS`.
+- **Existing deployments keep working:** with `BINDER_AUTH` unset, `BINDER_AUTH_HEADER` alone still means header mode. `BINDER_AUTH_HEADER` with any other explicit mode stops startup, so auth never changes silently.
+- **The token CLI reads only the data folder,** so a broken auth setting never stops an admin from making a token.
+- Rejected: storing passwords in Binder (a second identity system to secure), and RP-initiated logout at the provider (sign-out ends the Binder session only; the provider's own session is the provider's to end).
+
 ## 2026-11-21: Go public as a new repository (Inbox: binder/go-public)
 
 **Need:** publish Binder without its private history.

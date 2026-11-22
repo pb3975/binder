@@ -1,7 +1,7 @@
 // Admin CLI. It works on the data folder directly, so whoever can run it on the server is the admin.
 // Usage: binder token create --name <name> [--scope read|write] | binder token list | binder token revoke <name|id>
 import { newToken } from "./auth";
-import { loadConfig } from "./config";
+import { dataDirOf } from "./config";
 import { mkdirSync } from "node:fs";
 import { openDb } from "./db";
 
@@ -17,10 +17,10 @@ export function run(argv: string[], env: Record<string, string | undefined> = pr
     const i = rest.indexOf(f);
     return i >= 0 ? rest[i + 1] : undefined;
   };
-  // Only the data folder matters here; skip auth checks that apply to the server.
-  const cfg = loadConfig({ ...env, BINDER_AUTH_HEADER: undefined, BINDER_PREVIEWS: "off" });
-  mkdirSync(cfg.dataDir, { recursive: true }); // a fresh install may run the CLI before the server
-  const db = openDb(cfg.dataDir);
+  // Only the data folder matters here, so auth settings never stop an admin from making a token.
+  const dataDir = dataDirOf(env);
+  mkdirSync(dataDir, { recursive: true }); // a fresh install may run the CLI before the server
+  const db = openDb(dataDir);
   const at = new Date().toISOString();
   try {
     if (cmd === "create") {

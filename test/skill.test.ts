@@ -6,7 +6,7 @@ import { run } from "../src/cli";
 import { form, startBinder } from "./helpers";
 
 const skill = readFileSync(join(import.meta.dir, "..", "skill", "binder", "SKILL.md"), "utf8");
-const b = startBinder({ authHeader: null, allowedUsers: [] });
+const b = startBinder({ auth: { mode: "token" } });
 afterAll(() => b.stop());
 
 test("frontmatter names the skill and says to publish only when asked", () => {
@@ -46,7 +46,7 @@ test("/llms.txt serves the skill to any agent, with this instance's URL and auth
   expect(text).toContain(`"$BINDER_URL/api/artifacts"`); // the same publish steps as the skill
   expect(text.match(/^# /gm)?.length).toBe(1); // one title, as llms.txt expects
 
-  const open = startBinder({ authHeader: null, allowedUsers: [], devAnonymous: true });
+  const open = startBinder({ auth: { mode: "none" } });
   try {
     expect(await (await fetch(`${open.base}/llms.txt`)).text()).toContain("authentication off. No token is needed.");
   } finally {
