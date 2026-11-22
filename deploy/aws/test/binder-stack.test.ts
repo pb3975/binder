@@ -6,6 +6,7 @@ import * as cdk from "aws-cdk-lib";
 import { Annotations, Match, Template } from "aws-cdk-lib/assertions";
 import { BinderStack } from "../lib/binder-stack.ts";
 import { parseConfig, type Context } from "../lib/config.ts";
+import { loadConfig } from "../../../src/config.ts";
 
 // The feature flags in cdk.json change the template, so tests synthesize with them, as `cdk deploy` does.
 const FLAGS = JSON.parse(readFileSync(new URL("../cdk.json", import.meta.url), "utf8")).context;
@@ -315,4 +316,42 @@ describe("refuses unsafe combinations at synth", () => {
     refuses({ ...OIDC, oidcClientSecretArn: "hunter2" }, /full ARN/));
   test("OIDC with no allowlist", () => refuses({ ...OIDC, allowedGroups: undefined }, /allowedUsers or allowedGroups/));
   test("header mode, which an ALB cannot make safe", () => refuses({ auth: "header" }, /auth=header/));
+});
+
+// The stack and Binder are built separately, so check that Binder's own config parser accepts the
+// environment the stack gives the container. CloudFormation fills some values at deploy time; the
+// test puts synthetic values in their place, and adds what the image and the secrets provide.
+describe("the container's environment starts Binder", () => {
+  const atDeploy: Record<string, string> = {
+    BINDER_STORAGE: "s3://binder-data-example/binder",
+    BINDER_PUBLIC_URL: "http://internal-binder-123.us-east-1.elb.amazonaws.com",
+    AWS_REGION: "us-east-1",
+  };
+  const fromSecrets: Record<string, string> = {
+    BINDER_SECRET_KEY: "A".repeat(64), // the generated secret: 64 alphanumeric characters
+    BINDER_OIDC_CLIENT_SECRET: "synthetic-client-secret",
+  };
+  const IMAGE_ENV = { BINDER_LITESTREAM_SOCKET: "/tmp/litestream.sock" }; // from the Dockerfile
+
+  const startEnv = (t: Template) => {
+    const env: Record<string, string> = { ...IMAGE_ENV };
+    const pick = (k: string, from: Record<string, string>) => from[k] ?? expect.unreachable(`no synthetic value for ${k}`);
+    for (const [k, v] of Object.entries(envOf(t))) env[k] = typeof v === "string" ? v : pick(k, atDeploy);
+    for (const k of secretNames(t)) env[k] = pick(k, fromSecrets);
+    return env;
+  };
+
+  const cases: [string, Context, string][] = [
+    ["token, internal, plain HTTP", {}, "token"],
+    ["none, internal", { auth: "none" }, "none"],
+    ["token with HTTPS", DOMAIN, "token"],
+    ["oidc", OIDC, "oidc"],
+  ];
+  for (const [name, ctx, mode] of cases)
+    test(name, () => {
+      const cfg = loadConfig(startEnv(synth(ctx).template));
+      expect(cfg.auth.mode).toBe(mode as never);
+      expect(cfg.storage).toMatchObject({ kind: "s3", bucket: "binder-data-example", prefix: "binder", region: "us-east-1" });
+      expect(cfg.secretKey).not.toBeNull();
+    });
 });

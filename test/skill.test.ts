@@ -6,7 +6,7 @@ import { run } from "../src/cli";
 import { form, startBinder } from "./helpers";
 
 const skill = readFileSync(join(import.meta.dir, "..", "skill", "binder", "SKILL.md"), "utf8");
-const b = startBinder({ authHeader: null, allowedUsers: [] });
+const b = startBinder({ auth: { mode: "token" } });
 afterAll(() => b.stop());
 
 test("frontmatter names the skill and says to publish only when asked", () => {
@@ -25,7 +25,7 @@ test("the publish command uses the documented URL, headers, and fields", () => {
 test("the example meta.json publishes as written", async () => {
   const meta = JSON.parse(skill.match(/```json\n([\s\S]*?)\n\s*```/)![1]!);
   const out: string[] = [];
-  run(["token", "create", "--name", "agent"], { BINDER_DATA_DIR: b.dataDir }, (s) => out.push(s));
+  await run(["token", "create", "--name", "agent"], { BINDER_DATA_DIR: b.dataDir }, (s) => out.push(s));
   const r = await fetch(`${b.base}/api/artifacts`, {
     method: "POST",
     headers: { authorization: `Bearer ${out[0]}`, "x-binder": "1" },
@@ -46,7 +46,7 @@ test("/llms.txt serves the skill to any agent, with this instance's URL and auth
   expect(text).toContain(`"$BINDER_URL/api/artifacts"`); // the same publish steps as the skill
   expect(text.match(/^# /gm)?.length).toBe(1); // one title, as llms.txt expects
 
-  const open = startBinder({ authHeader: null, allowedUsers: [], devAnonymous: true });
+  const open = startBinder({ auth: { mode: "none" } });
   try {
     expect(await (await fetch(`${open.base}/llms.txt`)).text()).toContain("authentication off. No token is needed.");
   } finally {

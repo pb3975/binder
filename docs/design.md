@@ -51,6 +51,18 @@ data/
 - Version numbers are allocated inside the same synchronous SQLite transaction that renames the staging folder into place, so two concurrent publishes to one `id` get different numbers.
 - Binder is a single process. Two processes on one data folder are not supported.
 
+### S3 storage
+
+With `BINDER_STORAGE=s3://<bucket>/<prefix>`, version files and previews live in S3 under the same keys (`versions/<id>/<n>/<path>`, `thumbs/<id>.png`). This is for container hosts with no persistent disk, such as AWS Fargate.
+
+- **The database stays local and Litestream copies it to S3** (`<prefix>/db/`). SQLite on a network file system such as EFS is not safe, because its locking depends on the file system. At start, the container restores the database from S3. Only "no replica yet" may start empty; any other restore failure stops the container. Litestream then runs Binder as its child process and copies each change within about a second.
+- **No answered write is lost.** Litestream copies on its own one-second schedule, which leaves two gaps. Litestream 0.5.18's final sync skipped a database it had not picked up yet, so a write in the first second after start, followed by a stop, was lost. And a copy that kept failing was invisible while writes still succeeded. So Binder asks Litestream, through its control socket, to copy and wait (`POST /sync` with `wait`) before it answers any API write, and the `binder token` CLI does the same. If the copy fails, the write answers `503`. `/healthz` fails when S3 is more than 60 seconds behind. Only background writes (a token's last-used time, the preview flag) can still be lost in a crash.
+- **Orphans.** A version whose row was never confirmed keeps its files in S3, and its number is skipped, not reused.
+- **Writes.** Publishes and restores run one at a time in the process. Binder uploads every file, then writes the version row. A failed upload removes what it uploaded and records nothing. The skipped-number rule means files of a recorded version are never overwritten.
+- **Reads.** Content is read from S3 by Binder and served with the same headers as local files. Binder never redirects to S3: a presigned URL would not carry the CSP `sandbox`.
+- **One writer.** Binder must be the only process using a prefix. Two Binders on one prefix would each replicate their own database over the other. Version files are written with `If-None-Match: *`, so a second writer fails loudly before it can overwrite one.
+- **Credentials** come from the standard AWS variables, or from the ECS container endpoint (task role), refreshed before they expire.
+
 Content-addressed storage (one blob per unique file) would remove duplicate bytes between versions. It was rejected for now: artifacts are small, and a plain folder per version keeps relative links working, keeps previews simple, and keeps the data folder readable by a person.
 
 ## Serving untrusted HTML
@@ -92,22 +104,39 @@ CI runs real Chromium against 21 attacks aimed at an internal http service, a ra
 
 ## Authentication
 
-Binder answers one question per request: who is this, and may they read or write? Three sources can answer it. The order is fixed.
+Binder answers one question per request: who is this, and may they read or write? `BINDER_AUTH` picks one of four modes: `token` (default), `none`, `oidc`, or `header`. The sources are checked in a fixed order.
 
-1. **`Authorization: Bearer <token>`.** If the header is present, it must be a valid token. Binder never falls through to another source.
-2. **Session cookie.** A person pastes a token once on the sign-in page. Binder sets `binder_session`, an HMAC-signed `<token id>.<expiry>` value (`HttpOnly`, `SameSite=Strict`, `Secure` on https, 30 days). Revoking the token ends the session.
-3. **Trusted proxy header**, only when `BINDER_AUTH_HEADER` is set. The header counts only when the request comes from an address in `BINDER_TRUSTED_PROXIES` (default `127.0.0.1,::1`), and its value must match `BINDER_ALLOWED_USERS` (exact logins, `*@domain`, or `*`). Otherwise it is ignored and logged. Tailscale is this mode with `BINDER_AUTH_HEADER=Tailscale-User-Login`.
+1. **`Authorization: Bearer <token>`**, in every mode. If the header is present, it must be a valid token. Binder never falls through to another source.
+2. **Session cookie.** `binder_session` (`HttpOnly`, `SameSite=Strict`, `Secure` on https) holds one of two HMAC-signed values, each with its own MAC purpose and format:
+   - A token session, `<token id>.<expiry>.<mac>`, after a person pastes a token on the sign-in page. It lasts 30 days. Revoking the token ends it.
+   - An SSO session, `o.<name>.<expiry>.<mac>`, after an OIDC sign-in, in oidc mode only. It lasts 8 hours. Its MAC covers the provider, client, and allowlist settings, so changing them ends every SSO session.
+3. **Trusted proxy header**, in header mode only (`BINDER_AUTH_HEADER`). The header counts only when the request comes from an address in `BINDER_TRUSTED_PROXIES` (default `127.0.0.1,::1`), and its value must match `BINDER_ALLOWED_USERS` (exact logins, `*@domain`, or `*`). Otherwise it is ignored and logged. Tailscale is this mode with `BINDER_AUTH_HEADER=Tailscale-User-Login`.
 
 The peer check stops other containers and other hosts from claiming an identity. It does not stop processes on the same host, which can reach the proxy's backend port anyway: through a Docker port mapping, every host process appears as the bridge gateway. The proxy must also overwrite the header on every request. `tailscale serve` does (reasoned from its documentation, not tested here).
 
-With none of these, the API answers 401. `BINDER_DEV_ANONYMOUS=1` turns auth off for local development only.
+4. **Anonymous writer**, in none mode only.
+
+With none of these, the API answers 401. A signed-out `GET /api/session` also says which mode is on (`auth`), so the UI offers the right sign-in.
+
+**None mode** is for one person on their own machine. Its risk is DNS rebinding: a site the person visits points its own name at `127.0.0.1` and calls Binder from the browser. Those requests still carry the site's name in `Host`. So none mode answers only for loopback names and the host of `BINDER_PUBLIC_URL` (any port), and gives every other request `421`. That check covers the shell, the API, and `/c/`.
+
+**OIDC mode** signs people in with the authorization code flow, PKCE (S256), `state`, and `nonce`:
+
+- `GET /auth/login?next=<path>` stores `state`, `nonce`, the PKCE verifier, and `next` in a signed cookie (`HttpOnly`, `Path=/auth/callback`, 10 minutes, `Secure` on https). Each sign-in gets its own cookie, named `binder_login_<first 16 characters of state>`, so two tabs never overwrite each other. The callback reads and clears only the cookie its `state` names. It is `SameSite=Lax` because the provider's redirect back is a cross-site top-level GET, which would not carry a Strict cookie. `next` must parse to a path on `BINDER_PUBLIC_URL`'s origin; otherwise it becomes `/`.
+- `GET /auth/callback` checks `state` and uses each login cookie once. It exchanges the code at the discovered token endpoint (`client_secret_basic`, or PKCE alone for a public client). The redirect URI is always `${BINDER_PUBLIC_URL}/auth/callback`, never built from `Host`.
+- The token response must be complete (RFC 6749 5.1): an `id_token`, an `access_token`, and `token_type` Bearer.
+- Binder verifies the ID token with Web Crypto. It accepts one algorithm, `BINDER_OIDC_SIGNING_ALG` (RS256, PS256, or ES256; RS256 by default), and the key type must fit it. It refuses any `crit` header. The key comes from the JWKS by `kid`. The JWKS is cached for an hour, refetched once on an unknown `kid`, and refetched at most once a minute after a bad signature, for a provider that replaces a key under the same `kid`. Binder checks `iss` exactly, that `aud` is Binder's client ID and nothing else (OIDC Core 3.1.3.7), `azp` when present, a non-empty `sub`, finite `exp` and `iat` with 60 s of skew, and `nonce`. It refuses `email_verified: false`, and, with `BINDER_OIDC_HOSTED_DOMAIN`, an `hd` claim that does not match.
+- The issuer, every discovered endpoint, and `BINDER_PUBLIC_URL` must be https, except on loopback or with the test-only `BINDER_OIDC_ALLOW_HTTP=true`. Binder parses each URL and checks its scheme.
+- The person's name is the `email` claim, or `preferred_username` without one. They get in when that name matches `BINDER_ALLOWED_USERS` or a group in the groups claim matches `BINDER_ALLOWED_GROUPS`.
+- A refused sign-in redirects to `/?signin=denied|expired|failed`. The UI shows fixed text for each code, so a crafted link cannot put words on the page. The server log has the detail.
+- The SSO session cookie is Strict. The browser does not send it on the redirect from the callback, but the shell is public, and the shell's `/api/session` call is same-site, so it does. The Keycloak e2e proves this.
 
 - **Tokens** have a name (a person or an agent: `alice`, `ci-bot`) and a scope: `read` or `write`. Binder stores only the SHA-256 of the secret. The format is `bnd_<id>_<secret>`: lookup by id, then a constant-time hash compare.
 - **Token management is a CLI on the server** (`binder token create|list|revoke`), not an HTTP API. Whoever can run commands where the data folder lives is the admin. That removes admin roles, an admin UI, and the most dangerous endpoints. A stranger gets the first token with one `docker compose exec` command.
 - **What is public:** `/healthz` and the static UI shell (no data). Everything under `/api/`, `/thumb/`, and `/raw/` needs an identity. `/c/` needs a valid signature.
 - **What the history records:** `published_by` is the authenticated name. `agent` and `host` are what the publisher says about itself.
 
-**Why not built-in OIDC.** It is the most code and the most security surface. It also does not help agents, which need tokens anyway. A team with SSO can put an identity-aware proxy in front and use header mode. That path is documented as a recipe, not tested in CI. The proxy must let `/c/` through, because those requests carry no cookie, and it must overwrite the identity header on every route.
+**Why built-in OIDC (changed 2026-11-21).** This review first rejected it as the most code and the most security surface. The proxy path it pointed teams to needs a second service, a proxy that lets `/c/` and Bearer requests through, and a header that must be overwritten on every route. That is more setup and more ways to get it wrong than a team should need for SSO. Built-in OIDC keeps the first principles: agents use tokens in every mode, people never get a Binder password, and the identity provider owns identity, passwords, and MFA. Binder verifies the ID token itself with Web Crypto and has no runtime dependency. A real Keycloak signs people in in CI. The proxy recipe stays for teams that already run one.
 
 **Why not per-artifact permissions.** A Binder instance is one team's shelf. A team that needs a wall between groups runs two instances. Each is one container and one folder.
 
@@ -135,6 +164,6 @@ All configuration comes from environment variables with safe defaults. See [self
 
 ## Deployment targets
 
-Docker and docker compose, bare Bun, and Fly.io as the documented cloud example. The image is built for `linux/amd64` and `linux/arm64`. CI boots the real `slim` and `full` images from a clean volume, makes the first token with the CLI, publishes, views, checks history, runs as a fixed `--user`, and runs the browser sandbox and UI tests.
+Docker and docker compose, bare Bun, and Fly.io as the documented cloud example. AWS Fargate (no persistent disk) uses S3 storage; see "S3 storage" above. The image is built for `linux/amd64` and `linux/arm64`. CI boots the real `slim` and `full` images from a clean volume, makes the first token with the CLI, publishes, views, checks history, runs as a fixed `--user`, and runs the browser sandbox and UI tests.
 
 The container starts as root only to give `/data` to the unprivileged `bun` user, then drops to it. A fresh cloud volume is root-owned, so an image that started as `bun` could not write to it.

@@ -169,12 +169,18 @@ type VersionDbRow = Omit<Version, "files"> & { files: string };
 const toRow = (r: ArtifactDbRow): ArtifactRow => ({ ...r, tags: JSON.parse(r.tags), thumb: r.thumb === 1 });
 const toVersion = (r: VersionDbRow): Version => ({ ...r, files: JSON.parse(r.files) });
 
-export function openDb(dataDir: string) {
+/**
+ * Opens data/binder.sqlite. `migrate: false` refuses a schema v1 database instead of migrating it:
+ * the v1 migration moves folders on local disk, and S3 storage starts at v2.
+ */
+export function openDb(dataDir: string, opts: { migrate?: boolean } = {}) {
   const db = new Database(join(dataDir, "binder.sqlite"), { create: true });
   db.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;");
   const { user_version } = db.query("PRAGMA user_version").get() as { user_version: number };
   if (user_version > SCHEMA_VERSION)
     throw new Error(`binder.sqlite has schema v${user_version}; this Binder reads up to v${SCHEMA_VERSION}. Upgrade Binder.`);
+  if (user_version === 1 && opts.migrate === false)
+    throw new Error("binder.sqlite has schema v1, which only local storage can migrate. Start once with local storage first.");
   if (user_version === 1) migrateV1(db, dataDir);
   else if (user_version === 0) db.transaction(() => db.exec(V2_DDL + `PRAGMA user_version = ${SCHEMA_VERSION};`))();
   db.exec(TOKENS_DDL);
@@ -188,6 +194,9 @@ export function openDb(dataDir: string) {
   );
   const insertVersion = db.prepare(`INSERT INTO versions VALUES ($artifact_id, $version, $title, $entry, $files,
     $bytes, $note, $published_by, $agent, $host, $created_at)`);
+
+  const nextVersion = (id: string) =>
+    (db.query("SELECT COALESCE(MAX(version), 0) + 1 AS n FROM versions WHERE artifact_id = ?").get(id) as { n: number }).n;
 
   function saveArtifact(a: ArtifactRow) {
     const params: Record<string, unknown> = {};
@@ -225,18 +234,19 @@ export function openDb(dataDir: string) {
       const r = db.query("SELECT * FROM versions WHERE artifact_id = ? AND version = ?").get(id, n) as VersionDbRow | null;
       return r ? toVersion(r) : null;
     },
+    /** The lowest free version number of `id`. */
+    nextVersion,
     /**
-     * Allocates the next version number and records it, in one transaction.
-     * `place(n)` moves the staged files into the version folder. It runs inside the
-     * transaction and is synchronous, so concurrent publishes never share a number.
+     * Records version `n` of `next.id`, in one transaction. Throws when `n` is not above every
+     * recorded version, so two publishes never share a number. `place` runs inside the
+     * transaction and is synchronous (local storage renames the staged folder there).
      */
-    commit(next: Omit<ArtifactRow, "version">, v: Omit<Version, "version" | "artifact_id">, place: (n: number) => void): number {
-      return db.transaction(() => {
-        const { n } = db.query("SELECT COALESCE(MAX(version), 0) + 1 AS n FROM versions WHERE artifact_id = ?").get(next.id) as { n: number };
-        place(n);
+    commit(next: Omit<ArtifactRow, "version">, v: Omit<Version, "version" | "artifact_id">, n: number, place?: () => void) {
+      db.transaction(() => {
+        if (n < nextVersion(next.id)) throw new Error(`version ${n} of ${next.id} already exists`);
+        place?.();
         saveArtifact({ ...next, version: n });
         insertVersion.run(versionParams({ ...v, artifact_id: next.id, version: n }));
-        return n;
       })();
     },
     saveArtifact,

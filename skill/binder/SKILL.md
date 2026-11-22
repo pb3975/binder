@@ -12,7 +12,7 @@ Binder is a self-hosted library of agent-built pages. It files each page by proj
 The person who runs the Binder gives you two values. Keep them in the environment, not in files you commit:
 
 - `BINDER_URL`: the Binder address, such as `https://binder.example.com`.
-- `BINDER_TOKEN`: a token made with `binder token create --name <agent-name>`. Leave it unset only when Binder sits behind a proxy that identifies you, such as Tailscale.
+- `BINDER_TOKEN`: a token made with `binder token create --name <agent-name>`. Tokens work whatever sign-in the Binder uses for people, including single sign-on. Leave it unset only when Binder sits behind a proxy that identifies you, such as Tailscale, or runs on your own machine with sign-in off.
 
 Never print the token, paste it into an artifact, or pass it on a command line that is logged.
 
@@ -83,5 +83,6 @@ This saves `<id>-v<n>.html` for a one-file artifact, or `<id>-v<n>.zip` with a t
 
 - `401`: no token, or the token is wrong or revoked. Ask the user for a new one.
 - `403`: the token is read-only, the `X-Binder: 1` header is missing, or your proxy login is not on the Binder's allowlist.
+- `421`: the Binder has sign-in off and answers only on `localhost`. Use the address the user gave you, such as `http://localhost:8480`.
 - `400`: the response's `error` names the problem (bad `meta` JSON, no `file`, an unsafe path, or a `source_url` that is not http or https).
 - `413`: the artifact is over 64 MB. Compress media or link to it.

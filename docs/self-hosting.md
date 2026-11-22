@@ -16,11 +16,23 @@ docker compose exec binder binder token create --name you
 
 Compose binds Binder to `localhost` only. To share it, put HTTPS in front (see below) and set `BINDER_PUBLIC_URL`.
 
+### On your own laptop, without tokens
+
+If Binder is only for you, on your own machine, you can turn sign-in off:
+
+```sh
+git clone https://github.com/pb3975/binder && cd binder
+bun install --production
+BINDER_AUTH=none bun src/server.ts
+```
+
+Open <http://localhost:8480>. Agents on the same machine publish with `BINDER_URL=http://localhost:8480` and no token. Binder logs a warning at startup, because anyone who can reach it can read and publish. It listens on `127.0.0.1` and answers only requests addressed to `localhost`, `127.0.0.1`, or `[::1]` (see [None](#none-your-own-machine-only)). Never use `none` with `HOST=0.0.0.0` on a shared network or on a server.
+
 ## Images
 
 | Target | Build | What you get |
 |---|---|---|
-| `slim` (default) | `docker build -t binder .` | No Chromium. Cards show a generated cover. About 130 MB. |
+| `slim` (default) | `docker build -t binder .` | No Chromium. Cards show a generated cover. About 200 MB. |
 | `full` | `docker build --target full -t binder:full .` | Preview images rendered by Chromium. About 1.3 GB. |
 
 Choose `full` only if you trust the people and agents who publish. Chromium cannot use its own sandbox inside an unprivileged container, so a Chromium bug in a published page would reach the container. Binder still renders every preview through a pinned wrapper, a CDN-only CSP, and a network allowlist; see [design.md](design.md#previews). To switch Compose to `full`, set `target: full` in `docker-compose.yml`.
@@ -58,11 +70,83 @@ Set `BINDER_PUBLIC_URL` in `fly.toml` to your app's URL. Fly stops idle machines
 
 Binder speaks plain HTTP. Put it behind something that adds TLS: Caddy (`reverse_proxy 127.0.0.1:8480`), nginx, Traefik, Cloudflare Tunnel, a cloud load balancer, or `tailscale serve`. Then set `BINDER_PUBLIC_URL` to the HTTPS URL, so links in API responses are right and session cookies get the `Secure` flag.
 
+## Storage
+
+Binder keeps two kinds of data: the SQLite database (artifacts, versions, tokens) and the files of every version plus their previews. `BINDER_STORAGE` says where the files go.
+
+| `BINDER_STORAGE` | Files | Database | Use it for |
+|---|---|---|---|
+| unset or `local` (default) | `versions/` and `thumbs/` in the data folder | `binder.sqlite` in the data folder | Any host with a persistent disk or volume. |
+| `s3://<bucket>/<prefix>` | `<prefix>/versions/...` and `<prefix>/thumbs/...` in the bucket | local, and copied to `<prefix>/db/` by Litestream | Container hosts with no persistent disk, such as AWS Fargate. |
+
+### S3 storage
+
+The image restores the database from S3 at start, then runs Binder under [Litestream](https://litestream.io), which copies every database change to S3. The database is not kept on EFS or another network file system, because SQLite's locking is not safe there.
+
+```sh
+docker run -d --name binder -p 127.0.0.1:8480:8480 \
+  -e BINDER_STORAGE=s3://my-binder-bucket/binder \
+  -e BINDER_SECRET_KEY="$(openssl rand -base64 32)" \
+  -e AWS_REGION=us-east-1 \
+  binder
+```
+
+1. Generate `BINDER_SECRET_KEY` once and keep it in a secret store. It is required with S3. The container's disk is temporary, so a key generated there would change on every restart and end every session and content link.
+2. Set `AWS_REGION` (or `AWS_DEFAULT_REGION`).
+3. Give Binder credentials. On ECS or Fargate, use a task role: Binder and Litestream both read the container credentials endpoint (`AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`, or `AWS_CONTAINER_CREDENTIALS_FULL_URI` with `AWS_CONTAINER_AUTHORIZATION_TOKEN` or `AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE`). Elsewhere, set `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and optionally `AWS_SESSION_TOKEN`.
+4. For MinIO or another S3-compatible store, set `AWS_ENDPOINT_URL_S3` or `AWS_ENDPOINT_URL`. Binder then puts the bucket in the path (path-style addressing).
+5. The role needs `s3:GetObject`, `s3:PutObject`, and `s3:DeleteObject` on `<bucket>/<prefix>/*`, and `s3:ListBucket` on the bucket for that prefix.
+
+`binder token create` works as usual inside the running container. It writes to the local database, and Litestream copies the change to S3.
+
+**Rules and limits:**
+
+- **One Binder task per prefix.** Only one Binder may use a bucket prefix at a time. Run one task, never two (set the ECS service's desired count to 1, and its deployment to stop the old task before it starts the new one), and give each Binder instance its own prefix. Two Binders on one prefix would overwrite each other's database copy. Binder writes version files with a conditional PUT (`If-None-Match: *`), so a second writer that reaches a file first makes the other one's publish fail with "another Binder is writing to this prefix", instead of overwriting it. If S3 answers 409 (another request on the same key at the same time), Binder sends the same conditional PUT again, up to 4 times, then fails with its own message. That is a tripwire, not a lock: it does not protect the database copy.
+- **What a crash can lose (the recovery point).** Every API write (publish, edit, remove, restore) and every `binder token` change is answered only after Litestream confirms that S3 has it. If that copy fails, the write answers `503` and says so. So a crash, a kill, or a lost task loses no write that was answered with success. Two kinds of background writes are not confirmed: a token's "last used" time and the "has a preview" flag. A crash can lose the last second or so of those. A lost preview flag only means the preview renders again.
+- **Health.** `/healthz` answers `503` when Litestream cannot be reached, or when S3 has been behind the local database for more than 60 seconds (for example, when writes to `<prefix>/db/` fail). Point the load balancer or ECS health check at it. Its `replication` field says how far the copy is.
+- **A failed restore stops the container.** If the bucket, region, endpoint, or credentials are wrong, the container exits with an error. It never starts with an empty database, except on the first start, when there is no copy in S3 yet.
+- **Binder serves every file itself.** It reads from S3 and adds the same sandbox headers as with local storage. It never redirects a browser to S3.
+- **Schema v1 data** must be upgraded with local storage first. S3 storage starts at schema v2.
+
+**Backup.** Turn on S3 versioning for the bucket, and a lifecycle rule that expires old object versions after a period you choose. Versioning keeps overwritten and deleted objects, including old copies of the database. Litestream also keeps its own snapshots of the database under `<prefix>/db/` (24 hours by default).
+
+For a copy in another bucket or account, do not copy `<prefix>/db/` while Binder runs. Litestream compacts and deletes files there all the time, so a live `aws s3 sync` can copy a set of files that does not restore. Version files never change after a publish, so `<prefix>/versions/` is safe to copy at any time.
+
+1. Pick a new, empty destination prefix for this backup, such as `backups/2026-11-21`. Never reuse one. Old Litestream files left there could make a restore pick older data, and that data still passes an integrity check.
+2. Stop Binder (set the service's desired count to 0) and wait for the task to stop. A normal stop makes a last copy to S3.
+3. Copy the prefix: `aws s3 sync s3://<bucket>/<prefix> s3://<backup-bucket>/<backup-prefix>`.
+4. Start Binder again.
+5. Check that the database restores. Write a Litestream config for the backup, then restore it to a scratch file:
+
+   ```yaml
+   # check.yml
+   dbs:
+     - path: /tmp/check/binder.sqlite
+       replica:
+         type: s3
+         bucket: <backup-bucket>
+         path: <backup-prefix>/db
+         region: us-east-1
+         # Only for MinIO or another S3-compatible store:
+         # endpoint: https://s3.example.com
+         # force-path-style: true
+   ```
+
+   ```sh
+   litestream restore -config check.yml -integrity-check full /tmp/check/binder.sqlite
+   ```
+
+6. Check that Binder can use it. Copy the backup to another new, scratch prefix, and start a throwaway Binder there (`BINDER_STORAGE=s3://<backup-bucket>/<scratch-prefix>`, the same `BINDER_SECRET_KEY`, and a token you make with `binder token create` in it). Open a few artifacts you expect, and their older versions, and check that their files load. Then stop it and delete the scratch prefix. Do not point a Binder at the backup prefix itself: it would write to it.
+
+A backup is good only once both checks pass.
+
+To back up without stopping Binder, export the database instead of copying `<prefix>/db/`: restore it from the live replica into one consistent SQLite file, as in step 5 with the live bucket and prefix. Then copy `<prefix>/versions/` next to it.
+
 ## Backup and upgrades
 
-- Everything lives in the data folder. Back it up with any file copy while Binder is stopped, or use `sqlite3 binder.sqlite ".backup ..."` plus a copy of `versions/` while it runs.
+- With local storage, everything lives in the data folder. Back it up with any file copy while Binder is stopped, or use `sqlite3 binder.sqlite ".backup ..."` plus a copy of `versions/` while it runs.
 - Binder upgrades the database schema on start. **Back up before upgrading**, because an older Binder cannot read a newer schema and refuses to start on one.
-- Run one Binder process per data folder.
+- Run one Binder process per data folder, or per S3 prefix.
 
 ## Configuration
 
@@ -70,23 +154,47 @@ Binder reads all configuration from environment variables. Every variable is opt
 
 | Variable | Default | What it does |
 |---|---|---|
-| `BINDER_DATA_DIR` | `./data` (`/data` in the image) | Where the database, the signing key, and every version's files live. Back up this folder. |
+| `BINDER_DATA_DIR` | `./data` (`/data` in the image) | Where the database, the signing key, and every version's files live. Back up this folder. With S3 storage, only the database lives here. |
 | `HOST` | `127.0.0.1` (`0.0.0.0` in the image) | Address to listen on. |
 | `PORT` | `8480` | Port to listen on. |
-| `BINDER_PUBLIC_URL` | the request's origin | The URL people use, such as `https://binder.example.com`. Set it behind a TLS proxy so returned links are right. |
+| `BINDER_PUBLIC_URL` | the request's origin | The URL people use, such as `https://binder.example.com`. Set it behind a TLS proxy so returned links are right. It must be an `http` or `https` origin with no path: Binder does not support hosting under a subpath such as `/binder`. |
 | `BINDER_PREVIEWS` | `auto` | `auto` renders previews when Chromium is found. `on` requires Chromium. `off` never starts Chromium. |
 | `CHROMIUM` | `/usr/bin/chromium-browser` or `/usr/bin/chromium` | Chromium binary for previews. |
 | `BINDER_PREVIEW_HOSTS` | common public CDNs (cdnjs, jsDelivr, unpkg, esm.sh, Tailwind, jQuery, Google Fonts) | Comma list of the only external hosts a page may load from while its preview renders. `*.example.com` works. Viewing in a browser is not limited. |
-| `BINDER_AUTH_HEADER` | unset | Turns on header mode: trust this request header to name the user, such as `Tailscale-User-Login`. |
-| `BINDER_ALLOWED_USERS` | unset | Header mode only, and required there. Comma list of logins, `*@example.com`, or `*`. |
+| `BINDER_AUTH` | `token` | How people sign in: `token`, `none`, `oidc`, or `header`. See [Who can get in](#who-can-get-in). If it is unset and `BINDER_AUTH_HEADER` is set, the mode is `header`. |
+| `BINDER_AUTH_HEADER` | unset | Header mode: trust this request header to name the user, such as `Tailscale-User-Login`. Required with `BINDER_AUTH=header`, and refused with any other mode. |
+| `BINDER_ALLOWED_USERS` | unset | Header and oidc modes. Comma list of logins or emails, `*@example.com`, or `*`. Required in header mode. |
 | `BINDER_TRUSTED_PROXIES` | `127.0.0.1,::1` | Header mode only. Peer addresses (IPs or IPv4 CIDRs) the header is accepted from. |
-| `BINDER_DEV_ANONYMOUS` | unset | `1` turns authentication off. Local development only. |
+| `BINDER_STORAGE` | `local` | `local`, or `s3://<bucket>/<prefix>` to keep files in S3 and copy the database there. See [Storage](#storage). |
+| `BINDER_SECRET_KEY` | unset (`secret.key` in the data folder) | Base64 of at least 32 random bytes. Signs content links and sessions. Required with S3 storage. |
+| `AWS_REGION`, `AWS_ENDPOINT_URL_S3`, `AWS_ACCESS_KEY_ID`, ... | unset | The standard AWS variables, for S3 storage only. See [S3 storage](#s3-storage). |
+| `BINDER_OIDC_ISSUER` | unset | Oidc mode, required. The provider's issuer URL, exactly as its discovery document says it. |
+| `BINDER_OIDC_CLIENT_ID` | unset | Oidc mode, required. The client ID you registered for Binder. |
+| `BINDER_OIDC_CLIENT_SECRET` | unset | Oidc mode. Set it for a confidential client (`client_secret_basic`). Leave it unset for a public client, which uses PKCE only. |
+| `BINDER_OIDC_SCOPES` | `openid email profile` | Oidc mode. Scopes to ask for. Must include `openid`. |
+| `BINDER_OIDC_LABEL` | `Sign in with SSO` | Oidc mode. Text on the sign-in button. |
+| `BINDER_ALLOWED_GROUPS` | unset | Oidc mode. Comma list of groups. A member of any of them may sign in. Oidc mode needs this, `BINDER_ALLOWED_USERS`, or both. |
+| `BINDER_OIDC_GROUPS_CLAIM` | `groups` | Oidc mode. The ID token claim that lists the person's groups. |
+| `BINDER_OIDC_SIGNING_ALG` | `RS256` | Oidc mode. The one ID token signature algorithm Binder accepts: `RS256`, `PS256`, or `ES256`. Match your provider's setting. |
+| `BINDER_OIDC_HOSTED_DOMAIN` | unset | Oidc mode, for Google Workspace. The signed `hd` claim must equal this domain. |
+| `BINDER_OIDC_ALLOW_HTTP` | `false` | Oidc mode, **tests only**. `true` allows plain http to a provider that is not on `localhost`, as on an isolated Docker test network. Never set it in production. |
 
-`ALLOWED_LOGINS` and `DEV_ALLOW_ANONYMOUS` from Binder 0.1 were renamed. Binder refuses to start when it sees them, so auth never changes silently.
+Oidc mode also needs `BINDER_PUBLIC_URL`, because the redirect URI is `${BINDER_PUBLIC_URL}/auth/callback`. Binder never builds it from the request. The issuer, every endpoint the provider's discovery document names, and `BINDER_PUBLIC_URL` must be `https`. Plain `http` works only for `localhost`, `127.0.0.1`, and `[::1]`, or with `BINDER_OIDC_ALLOW_HTTP=true`.
+
+A setting that belongs to another mode stops startup, so a policy you meant to apply is never silently ignored. For example, `BINDER_ALLOWED_GROUPS` with `BINDER_AUTH=none` fails, and so does `BINDER_TRUSTED_PROXIES` outside header mode. A blank `BINDER_AUTH=` fails too; unset it to get the default.
+
+Old names fail loudly, so auth never changes silently. Binder refuses to start when it sees `ALLOWED_LOGINS` or `DEV_ALLOW_ANONYMOUS` (from Binder 0.1), or `BINDER_DEV_ANONYMOUS` (replaced by `BINDER_AUTH=none`).
 
 ## Who can get in
 
-Binder has two ways to know who is calling. You can use either or both.
+`BINDER_AUTH` picks how people sign in. Agents always use tokens: `Authorization: Bearer bnd_...` works in every mode. Binder never stores a password. In oidc mode, your identity provider handles passwords and MFA.
+
+| Mode | People sign in with | Use it when |
+|---|---|---|
+| `token` (default) | A token they paste once | A few people, no single sign-on. The simplest setup that is safe on a network. |
+| `none` | Nothing | Binder runs on your own laptop, for you alone. Never on a shared network or a server. |
+| `oidc` | Your identity provider: Keycloak, Okta, Entra ID, Google, Authentik, and others | A team with single sign-on. Removing someone at the provider ends their Binder session within 8 hours. |
+| `header` | A proxy that signs them in, such as Tailscale | Binder sits behind `tailscale serve` or an identity-aware proxy that is the only way in. |
 
 ### Tokens (default)
 
@@ -105,6 +213,60 @@ Run these where the data folder is: `docker compose exec binder binder token cre
 - People paste their token once on the sign-in screen. Binder sets a 30-day session cookie (`HttpOnly`, `SameSite=Strict`) and never stores the token in the browser.
 - Binder stores only a SHA-256 hash of each token.
 - Serve Binder over HTTPS whenever tokens cross a network you do not trust.
+
+### None (your own machine only)
+
+`BINDER_AUTH=none` treats every request without a token as the user `anonymous`, who can read and write. A valid token still names the publisher, and writes still need `X-Binder: 1`.
+
+A web page you visit could try to reach Binder on `localhost` through DNS rebinding: its own domain name starts to resolve to `127.0.0.1`. Its requests still carry that domain in the `Host` header. So in none mode, Binder answers only when `Host` is `localhost`, `127.0.0.1`, `[::1]` (any port), or the host of `BINDER_PUBLIC_URL`. Every other request gets `421` with a message. This covers the UI, the API, and `/c/` content. `/healthz` always answers.
+
+### OIDC (single sign-on)
+
+![The sign-in screen in oidc mode: a "Sign in with Example" button, with a token one click away](images/signin-sso.png)
+
+Binder signs people in with the OpenID Connect authorization code flow, with PKCE (S256), `state`, and `nonce`. It verifies the ID token itself: one signature algorithm (`BINDER_OIDC_SIGNING_ALG`, RS256 by default), keys from the provider's JWKS, and exact `iss`, `aud`, `sub`, `exp`, `iat`, and `nonce` checks. The audience must be Binder's client ID alone; a token also meant for another audience is refused. Binder refuses an email the provider marks as not verified (`email_verified: false`).
+
+```sh
+BINDER_AUTH=oidc
+BINDER_PUBLIC_URL=https://binder.example.com
+BINDER_OIDC_ISSUER=https://id.example.com/realms/team
+BINDER_OIDC_CLIENT_ID=binder
+BINDER_OIDC_CLIENT_SECRET=...            # from the provider; keep it out of git
+BINDER_ALLOWED_GROUPS=binder-users       # and/or BINDER_ALLOWED_USERS='*@example.com'
+BINDER_OIDC_LABEL='Sign in with Example'
+```
+
+1. Register Binder at your provider as a web application. The redirect URI is `https://binder.example.com/auth/callback`: your `BINDER_PUBLIC_URL` plus `/auth/callback`.
+2. Open Binder at `BINDER_PUBLIC_URL`. The sign-in cookie is set on that address, so sign-in from another address fails with "took too long".
+3. The person's Binder name is the `email` claim, in lowercase. If there is no email, Binder uses `preferred_username` and matches the allowlist against that.
+4. The SSO session lasts 8 hours. Then the person sees the sign-in screen again. The provider usually signs them in again without asking for a password. Changing the provider, the client, either allowlist, or `BINDER_OIDC_HOSTED_DOMAIN` ends every SSO session at the next start.
+   - Removing someone at the provider ends their Binder session within 8 hours. Content links they already opened are separate: each signed `/c/` link lasts 8 to 9 hours from when Binder issued it. So a link issued just before the session ended can keep working for up to 9 more hours. Removing an artifact ends its links at once.
+5. Two tabs can sign in at once. Each sign-in has its own short-lived cookie (10 minutes). A sign-in that is still at the provider when Binder restarts still finishes, but Binder forgets which sign-ins it has finished, so the provider's one-time code is then the only guard against a replay.
+6. Sign out ends the Binder session only. The person stays signed in at the provider.
+7. Tokens keep working. People can still paste a token on the sign-in screen under "Use a Binder token instead", and agents publish with tokens.
+
+#### Keycloak
+
+1. In your realm, go to **Clients**, then **Create client**. Use client type **OpenID Connect** and client ID `binder`.
+2. Turn **Client authentication** on (a confidential client). Under **Authentication flow**, keep **Standard flow** only.
+3. Set **Valid redirect URIs** to `https://binder.example.com/auth/callback` and **Web origins** to `https://binder.example.com`.
+4. On the **Credentials** tab, copy the client secret into `BINDER_OIDC_CLIENT_SECRET`.
+5. To allow a group: on the client's **Client scopes** tab, open `binder-dedicated` and add a mapper **By configuration**, **Group Membership**. Set **Token Claim Name** to `groups`, turn **Full group path** off, and keep **Add to ID token** on. Then set `BINDER_ALLOWED_GROUPS` to the group name, such as `binder-users`.
+6. Set `BINDER_OIDC_ISSUER` to `https://<keycloak host>/realms/<realm>`.
+7. Binder refuses a user whose email is not verified (`email_verified: false`), even when the user is in the group. Verify each user's email in Keycloak (**Users**, then **Email verified**), or turn on **Verify email** for the realm.
+
+With **Full group path** on, the claim says `/binder-users`, and Binder compares group names exactly. CI signs in through a real Keycloak with the realm in [`test/e2e/keycloak-realm.json`](../test/e2e/keycloak-realm.json) (`scripts/e2e-oidc.sh`).
+
+#### Other providers
+
+CI tests Keycloak only. These notes are not tested, and providers change their consoles, so check each against your provider's documentation and its `/.well-known/openid-configuration`.
+
+- **Okta.** Issuer: `https://<your-org>.okta.com/oauth2/default` for the default authorization server, or `https://<your-org>.okta.com` for the org server. Create an OIDC **Web Application**. For groups, add a `groups` claim to the ID token in the authorization server's **Claims** (with a filter such as "Matches regex `.*`"), or on the org server, set the app's **Groups claim**.
+- **Microsoft Entra ID.** Issuer: `https://login.microsoftonline.com/<tenant-id>/v2.0`. Register an app with a **Web** redirect URI. **Allow by group, not by email domain.** Entra does not send `email_verified`, and a user or a guest can have an `email` or `preferred_username` in a domain your tenant does not own, so `BINDER_ALLOWED_USERS='*@your-domain'` is not safe here. Turn on the groups claim under **Token configuration**, **Add groups claim**. It holds group object IDs (GUIDs), not names, so put the IDs in `BINDER_ALLOWED_GROUPS`. Exact emails of known people are fine too.
+- **Google.** Issuer: `https://accounts.google.com`. Create an OAuth client of type **Web application**. Google sends no groups claim. To admit a Google Workspace domain, set `BINDER_OIDC_HOSTED_DOMAIN=example.com` and `BINDER_ALLOWED_USERS='*'`: Google signs the account's Workspace domain into the `hd` claim, and Binder requires it to match. Do not use `*@example.com` alone with Google, because an email suffix does not prove the account belongs to that Workspace. For a few people, list their exact emails.
+- **Authentik, Zitadel, Auth0, and others.** Use the issuer URL that the provider's `/.well-known/openid-configuration` reports. Binder refuses to start sign-in when the discovered issuer differs from `BINDER_OIDC_ISSUER`, even by a trailing slash.
+
+If sign-in fails, Binder logs the reason (`sign-in refused (...)`) and shows the person a short message.
 
 ### Header mode (Tailscale or an identity-aware proxy)
 
