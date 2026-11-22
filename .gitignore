@@ -5,3 +5,4 @@ data/
 deploy/ssh/local.env
 deploy/aws/cdk.out/
 deploy/aws/cdk.context.json
+_site/

@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; style-src 'self'; script-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Binder: a self-hosted library for the pages your AI agents build</title>
+  <meta name="description" content="Binder is a small, <span class="nowrap">self-hosted</span> server for the HTML pages your AI agents build. Agents publish with one curl request. Binder files each page by project, keeps every version, and shows it in a sandbox.">
+  <meta name="color-scheme" content="light dark">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="canonical" href="https://pb3975.github.io/binder/">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Binder">
+  <meta property="og:title" content="Binder: a self-hosted library for the pages your AI agents build">
+  <meta property="og:description" content="Agents publish with one curl request. Binder files each page by project, keeps every version, and shows it in a sandbox.">
+  <meta property="og:url" content="https://pb3975.github.io/binder/">
+  <meta property="og:image" content="https://pb3975.github.io/binder/images/library.png">
+  <meta property="og:image:width" content="1440">
+  <meta property="og:image:height" content="900">
+  <meta property="og:image:alt" content="The Binder library, with demo pages grouped by project.">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="preload" href="fonts/fraunces.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="site.css">
+  <script src="site.js" defer></script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="top">
+    <div class="wrap top-row">
+      <a class="brand" href="./" aria-label="Binder home">
+        <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="5" y="3" width="22" height="26" rx="4" fill="currentColor" opacity=".14"/><rect x="5" y="3" width="22" height="26" rx="4" fill="none" stroke="currentColor" stroke-width="2"/><g fill="currentColor"><circle cx="5" cy="10" r="2.4"/><circle cx="5" cy="16" r="2.4"/><circle cx="5" cy="22" r="2.4"/></g><path d="M12 11h9M12 16h9M12 21h6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        <span>Binder</span>
+      </a>
+      <nav class="top-links" aria-label="Project">
+        <a class="wide-only" href="https://github.com/pb3975/binder#readme">Docs</a>
+        <a class="wide-only" href="https://github.com/pb3975/binder/blob/main/docs/self-hosting.md">Self-hosting</a>
+        <a href="https://github.com/pb3975/binder">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <nav class="index-tabs" aria-label="Sections">
+    <a href="#publish" class="hue-publish">Publish</a>
+    <a href="#history" class="hue-history">History</a>
+    <a href="#sandbox" class="hue-sandbox">Sandbox</a>
+    <a href="#teams" class="hue-teams">Teams</a>
+    <a href="#small" class="hue-small">Small</a>
+    <a href="#start" class="hue-start">Start</a>
+  </nav>
+
+  <main id="main">
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="wrap">
+        <div class="hero-text">
+          <h1 id="hero-title">A library for the pages your agents build.</h1>
+          <div class="hero-side">
+            <p class="lead">Agents make explainers, diagrams, dashboards, and reports. Most end up lost in a thread or a temp folder. Binder is a small, <span class="nowrap">self-hosted</span> server that files them by project, keeps every version, and shows each one in a sandbox.</p>
+            <div class="actions">
+              <a class="button" href="#start">Quick start</a>
+              <a class="text-link" href="https://github.com/pb3975/binder">Source on GitHub</a>
+            </div>
+            <p class="fine">MIT licensed. One container. No account to create.</p>
+          </div>
+        </div>
+        <figure class="shot">
+          <div class="frame">
+            <picture>
+              <source srcset="images/library-dark.png" media="(prefers-color-scheme: dark)">
+              <img src="images/library.png" width="1440" height="900" alt="The Binder library. Demo pages are grouped under project headings, each with a preview, a title, a summary, and tags. Filters for project, domain, kind, and tags run down the left side.">
+            </picture>
+          </div>
+          <figcaption>The library, grouped by project. Demo data.</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section class="band hue-publish" id="publish" aria-labelledby="publish-title">
+      <div class="wrap cols">
+        <div class="prose">
+          <h2 id="publish-title"><span class="tab" aria-hidden="true"></span>One request to publish.</h2>
+          <p>Any agent that can run curl can publish. There is no SDK, no MCP server, and nothing to install on the agent's machine.</p>
+          <div class="points">
+            <p><strong>Teach an agent once.</strong> Copy the <a href="https://github.com/pb3975/binder/tree/main/skill/binder">skill folder</a> into the agent's skills directory, or tell the agent to read <code>/llms.txt</code> on your Binder. Both give the same steps.</p>
+            <p><strong>One file or a folder.</strong> A single HTML file becomes <code>index.html</code>. For a folder, send one part per file, and relative links keep working.</p>
+          </div>
+        </div>
+        <div class="object stack">
+          <div class="code">
+            <div class="code-head"><span class="label">shell</span><button class="copy" type="button" hidden>Copy</button></div>
+            <pre data-source="README.md"><code>export BINDER_URL=http://localhost:8480 BINDER_TOKEN=bnd_...   <span class="c"># make a separate token per agent</span>
+echo '&lt;h1&gt;Hello, Binder&lt;/h1&gt;' &gt; hello.html
+curl -fsS "$BINDER_URL/api/artifacts" -H 'X-Binder: 1' -H "Authorization: Bearer $BINDER_TOKEN" \
+  -F 'meta={"id":"hello","title":"Hello","project":"demo","note":"First version"}' \
+  -F 'file=@hello.html'</code></pre>
+          </div>
+          <div class="code">
+            <div class="code-head"><span class="label">response</span></div>
+            <pre><code>{
+  <span class="c">…</span>
+  "version": 1,
+  <span class="c">…</span>
+  "url": "http://localhost:8480/a/hello",
+  "content_url": "http://localhost:8480/c/hello/1/1795377600.2ZTEc137…/index.html",
+  <span class="c">…</span>
+}</code></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="band hue-history" id="history" aria-labelledby="history-title">
+      <div class="wrap cols">
+        <div class="prose">
+          <h2 id="history-title"><span class="tab" aria-hidden="true"></span>Every version kept.</h2>
+          <p>Publish the same id again and Binder makes a new version. History records who published it, when, their note, and which files changed. Open any old version, restore it, or download it.</p>
+          <p>Restore copies an old version forward, so history only grows. Removal is a soft delete.</p>
+        </div>
+        <figure class="object">
+          <div class="viewer" id="viewer-mock">
+            <div class="vm-bar">
+              <div class="vm-title">How the Job Queue Retries</div>
+              <div class="vm-sub"><span class="dot" aria-hidden="true"></span>Acme API · Explainer · Nov 21, 2026</div>
+            </div>
+            <div class="vm-banner" id="vm-banner" hidden>
+              <span id="vm-banner-text"></span>
+              <button class="vm-latest" type="button" id="vm-latest">Back to latest</button>
+            </div>
+            <div class="vm-body">
+              <div class="vm-page" aria-label="The artifact, at the selected version" role="group">
+                <div class="vm-page-head">
+                  <div class="vm-page-title">How the Job Queue Retries</div>
+                  <div class="vm-page-sub">Synthetic demo artifact</div>
+                </div>
+                <ul class="vm-tiles" id="vm-tiles">
+                  <li><b>6</b>max attempts</li>
+                  <li><b>1s ± 30%</b>backoff with jitter</li>
+                  <li><b>2h</b>dead letter after</li>
+                  <li><b>manual</b>replays</li>
+                </ul>
+              </div>
+              <div class="vm-panel">
+                <div class="vm-h" id="vm-history-label">History</div>
+                <ul class="vm-history" aria-labelledby="vm-history-label">
+                  <li><button type="button" data-ver="3" aria-pressed="true"><span class="vn">v3</span><span class="meta">Nov 21, 2026 · alice · claude-code</span><span class="note">Fix the backoff numbers after review</span><span class="chg">~1 index.html</span></button></li>
+                  <li><button type="button" data-ver="2" aria-pressed="false"><span class="vn">v2</span><span class="meta">Nov 21, 2026 · alice · codex</span><span class="note">Add jitter and the dead-letter diagram</span><span class="chg">~1 index.html</span></button></li>
+                  <li><button type="button" data-ver="1" aria-pressed="false"><span class="vn">v1</span><span class="meta">Nov 21, 2026 · alice · claude-code</span><span class="note">First draft</span><span class="chg"><span class="add">+1</span> index.html</span></button></li>
+                </ul>
+              </div>
+            </div>
+            <p class="sr-only" id="vm-status" aria-live="polite"></p>
+          </div>
+          <figcaption>A model of the viewer with demo data. Choose a version.</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section class="band hue-sandbox" id="sandbox" aria-labelledby="sandbox-title">
+      <div class="wrap cols">
+        <div class="prose">
+          <h2 id="sandbox-title"><span class="tab" aria-hidden="true"></span>Untrusted HTML stays in its box.</h2>
+          <p>An agent can copy content from anywhere, so Binder treats every page as untrusted. Each page runs in an opaque origin. It cannot read Binder, your session, or other pages, and it cannot publish or delete anything.</p>
+          <p><a class="text-link" href="https://github.com/pb3975/binder/blob/main/docs/design.md#serving-untrusted-html">Read the threat model</a></p>
+        </div>
+        <dl class="object spec">
+          <div>
+            <dt><code>Content-Security-Policy: sandbox</code></dt>
+            <dd>Sent with every artifact file. The page gets an opaque origin with no cookies and no storage.</dd>
+          </div>
+          <div>
+            <dt><code>/c/&lt;id&gt;/&lt;version&gt;/&lt;expiry&gt;.&lt;signature&gt;/</code></dt>
+            <dd>Files are served only from signed URLs. Each one grants read access to one version for a few hours.</dd>
+          </div>
+          <div>
+            <dt><code>X-Binder: 1</code></dt>
+            <dd>Required on every write. A sandboxed page can send it only after a CORS preflight, and Binder never approves one.</dd>
+          </div>
+          <div>
+            <dt><code data-claim="21 attacks">21 attacks, 0 connections</code></dt>
+            <dd>With previews on, Chromium renders each page behind a pinned wrapper and a network allowlist. CI runs 21 attacks against it and expects zero connections.</dd>
+          </div>
+        </dl>
+      </div>
+    </section>
+
+    <section class="band hue-teams" id="teams" aria-labelledby="teams-title">
+      <div class="wrap cols">
+        <div class="prose">
+          <h2 id="teams-title"><span class="tab" aria-hidden="true"></span>For one person or a team.</h2>
+          <p>Pick how people sign in with one setting. Agents use tokens in every mode.</p>
+          <p>Runs with Docker Compose, plain <code>docker run</code>, or Bun. On a host with no disk, such as AWS Fargate, files go to S3.</p>
+          <p class="links"><a class="text-link" href="https://github.com/pb3975/binder/blob/main/docs/self-hosting.md">Self-hosting guide</a><a class="text-link" href="https://github.com/pb3975/binder/blob/main/docs/aws.md">AWS guide</a></p>
+        </div>
+        <div class="object">
+          <table class="modes">
+            <caption class="sr-only">Values of BINDER_AUTH</caption>
+            <thead>
+              <tr><th scope="col"><code>BINDER_AUTH</code></th><th scope="col">Who signs in, and how</th></tr>
+            </thead>
+            <tbody>
+              <tr><th scope="row"><code>token</code> <span class="default">default</span></th><td>Each person and each agent gets a named token. History records who published each version.</td></tr>
+              <tr><th scope="row"><code>oidc</code></th><td>People sign in with your identity provider, such as Keycloak, Okta, Entra ID, or Google. Binder never stores a password.</td></tr>
+              <tr><th scope="row"><code>header</code></th><td>Behind Tailscale or another identity-aware proxy, Binder trusts the proxy's user header, and only from the proxy's address.</td></tr>
+              <tr><th scope="row"><code>none</code></th><td>No sign-in, for one person on a laptop. Binder answers only requests addressed to localhost.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="band hue-small" id="small" aria-labelledby="small-title">
+      <div class="wrap cols">
+        <div class="prose">
+          <h2 id="small-title"><span class="tab" aria-hidden="true"></span>Small enough to read in an afternoon.</h2>
+          <p>One Bun process, one SQLite file, one data folder. No runtime dependencies and no build step. Backup is a folder copy.</p>
+          <p>Binder is not a CMS. It has no comments, no real-time editing, and no public sharing.</p>
+        </div>
+        <div class="object">
+          <div class="code">
+            <div class="code-head"><span class="label">data/</span></div>
+            <pre data-source="docs/design.md" data-match="lines"><code>binder.sqlite        <span class="c">artifacts, versions, tokens</span>
+secret.key           <span class="c">32 random bytes, created on first start</span>
+versions/&lt;id&gt;/&lt;n&gt;/   <span class="c">the files of version n, immutable after publish</span>
+thumbs/&lt;id&gt;.png      <span class="c">preview of the current version</span></code></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="band hue-start" id="start" aria-labelledby="start-title">
+      <div class="wrap cols">
+        <div class="prose">
+          <h2 id="start-title"><span class="tab" aria-hidden="true"></span>Start in <span class="nowrap">three commands.</span></h2>
+          <p>You need Docker.</p>
+        </div>
+        <div class="object stack">
+          <div class="code">
+            <div class="code-head"><span class="label">shell</span><button class="copy" type="button" hidden>Copy</button></div>
+            <pre data-source="README.md" data-lines="3"><code>git clone https://github.com/pb3975/binder &amp;&amp; cd binder
+docker compose up -d
+docker compose exec binder binder token create --name you</code></pre>
+          </div>
+          <p>Open <code>http://localhost:8480</code> and paste the token.</p>
+          <div class="actions">
+            <a class="button" href="https://github.com/pb3975/binder/blob/main/docs/self-hosting.md">Self-hosting guide</a>
+            <a class="text-link" href="https://github.com/pb3975/binder">Source on GitHub</a>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <div class="wrap foot-row">
+      <div class="foot-brand">
+        <span class="brand small">
+          <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="5" y="3" width="22" height="26" rx="4" fill="currentColor" opacity=".14"/><rect x="5" y="3" width="22" height="26" rx="4" fill="none" stroke="currentColor" stroke-width="2"/><g fill="currentColor"><circle cx="5" cy="10" r="2.4"/><circle cx="5" cy="16" r="2.4"/><circle cx="5" cy="22" r="2.4"/></g><path d="M12 11h9M12 16h9M12 21h6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          <span>Binder</span>
+        </span>
+        <span class="muted">MIT licensed</span>
+      </div>
+      <nav class="foot-links" aria-label="Documents">
+        <a href="https://github.com/pb3975/binder">GitHub</a>
+        <a href="https://github.com/pb3975/binder/blob/main/docs/self-hosting.md">Self-hosting</a>
+        <a href="https://github.com/pb3975/binder/blob/main/docs/design.md">Design</a>
+        <a href="https://github.com/pb3975/binder/blob/main/docs/decisions.md">Decisions</a>
+        <a href="https://github.com/pb3975/binder/blob/main/SECURITY.md">Security</a>
+        <a href="https://github.com/pb3975/binder/blob/main/CHANGELOG.md">Changelog</a>
+      </nav>
+      <p class="muted foot-note">This page loads no trackers and nothing from a CDN.</p>
+    </div>
+  </footer>
+</body>
+</html>
