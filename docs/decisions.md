@@ -2,6 +2,18 @@
 
 Newest first. Each entry says what was decided and why. [design.md](design.md) has the full reasoning.
 
+## 2026-11-22: Landing page on GitHub Pages, deployed by Actions
+
+**Need:** a public page that says what Binder is, shows it, and gives the real commands, without a second site to run and without weakening what Binder promises about trust.
+
+- **Plain HTML, CSS, and JS in `site/`.** No framework, bundler, or npm dependency, so the page fits invariant 4 like the app.
+- **One owner for each shared file.** `scripts/build-site.sh` copies the fonts and icon from `public/` and the screenshots from `docs/images/` at build time. Git never holds a second copy.
+- **Deploy with the official Pages actions, from the same build script CI checks.** The deploy runs only on `main`, only when a file the page is built from changes, and only the deploy job gets `pages: write` and `id-token: write`.
+- **The page loads nothing from another origin.** A meta CSP (`default-src 'none'`, `'self'` for images, styles, scripts, and fonts) enforces it. No CDN, web font service, or analytics. A page about a sandbox for untrusted HTML should not run third-party code.
+- **The page cannot drift from the docs.** `test/site.test.ts` fails when a command on the page is not in `README.md` word for word, or a number it states is gone from the docs. `scripts/e2e-site.sh` checks the page in real Chrome.
+- **Light and dark screenshots from one e2e run.** The hero picks `library-dark.png` in dark mode, and both show the same synthetic demo data.
+- Rejected: Pages from a branch folder (`/docs`). It would publish the whole docs folder, need a second copy of the fonts, and deploy without a check. Also rejected: a static site generator, which adds a toolchain for one page.
+
 ## 2026-11-21: AWS quick start on ECS Fargate and S3
 
 **Need:** a team can run a private Binder on AWS from an empty account with one command, at low cost, without weakening auth.

@@ -64,9 +64,10 @@ function launch() {
   return shared;
 }
 
-export async function browser(opts: { width?: number; height?: number; dark?: boolean } = {}) {
+export async function browser(opts: { width?: number; height?: number; dark?: boolean; permissions?: string[] } = {}) {
   const { port, root } = await launch();
   const { browserContextId } = await root.send("Target.createBrowserContext", { disposeOnDetach: true });
+  if (opts.permissions) await root.send("Browser.grantPermissions", { browserContextId, permissions: opts.permissions });
   const { targetId } = await root.send("Target.createTarget", { url: "about:blank", browserContextId });
   const page = await connect(`ws://127.0.0.1:${port}/devtools/page/${targetId}`);
   const send = page.send;
@@ -99,6 +100,8 @@ export async function browser(opts: { width?: number; height?: number; dark?: bo
     send,
     evaluate,
     dialogs,
+    /** Listens for one CDP event on this page (one listener per event name). */
+    on: page.on,
     async goto(url: string, settle = 1200) {
       debug(`goto ${url}`);
       await send("Page.navigate", { url });
@@ -117,8 +120,8 @@ export async function browser(opts: { width?: number; height?: number; dark?: bo
       ).catch((e) => `page unreadable: ${e}`);
       throw new Error(`timed out waiting for ${expression}; page: ${state}; dialogs: ${dialogs.join(" | ")}`);
     },
-    async screenshot(path: string) {
-      const r = (await send("Page.captureScreenshot", { format: "png" })) as { data: string };
+    async screenshot(path: string, fullPage = false) {
+      const r = (await send("Page.captureScreenshot", { format: "png", captureBeyondViewport: fullPage })) as { data: string };
       await Bun.write(path, Buffer.from(r.data, "base64"));
     },
     close() {

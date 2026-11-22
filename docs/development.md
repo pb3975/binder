@@ -39,6 +39,32 @@ scripts/e2e-oidc.sh              # signs in through a real Keycloak (quay.io/key
 
 CI runs all of these, plus an arm64 build once the repo is public (`.github/workflows/ci.yml`). Pushing a `v*` tag publishes a release; see [releasing.md](releasing.md). The e2e run checks publish, view, and history, and two security properties in a real browser: previews cannot reach internal http services, and an artifact in the viewer cannot read or change Binder.
 
+## Landing page (`site/`)
+
+The landing page at <https://pb3975.github.io/binder/> is three plain files: `site/index.html`, `site/site.css`, and `site/site.js`. There is no framework, bundler, or npm dependency. `scripts/build-site.sh [outdir]` assembles the published folder (default `_site/`, which git ignores). It copies `site/`, then the fonts and icon from `public/` and the screenshots from `docs/images/`, so git holds one copy of each.
+
+The page loads nothing from another origin. A meta CSP enforces it, so the page has no inline style or script. Every URL is relative, because Pages serves it under `/binder/`.
+
+To preview it, build it and serve the folder under `/binder/`, as the browser check does:
+
+```sh
+scripts/build-site.sh /tmp/site/binder
+cd /tmp/site && python3 -m http.server 8000       # then open http://localhost:8000/binder/
+```
+
+Two checks, both in CI (the `site` job):
+
+```sh
+bun test test/site.test.ts       # built output: links resolve, no other origin, exact CSP, commands match README
+scripts/e2e-site.sh              # real Chrome at 390 and 1280 px, light and dark (CHROMIUM=<path>, SHOTS=<dir>)
+```
+
+`test/site.test.ts` also runs in `bun run check`. It fails when a command on the page no longer matches `README.md`, or a number on the page (such as "21 attacks") is gone from the docs. `scripts/e2e-site.sh` checks for console errors, CSP violations, failed requests, and requests to other origins. It also checks horizontal overflow, the hero screenshot for each color scheme, headings that end in one word, WCAG AA contrast, the index tabs, the version switcher, and the copy button. Locally it finds Chrome on `PATH` or Playwright's Chromium in `~/.cache/ms-playwright/`.
+
+The hero uses `docs/images/library.png` and `library-dark.png`. Make both from one run of `SHOTS=<dir> scripts/e2e.sh`, so they show the same demo data.
+
+`.github/workflows/pages.yml` deploys the page when a push to `main` changes a file the page is built from, or when someone runs the workflow by hand. It runs the same `scripts/build-site.sh`. It deploys the landing page only, never Binder.
+
 ## AWS stack (`deploy/aws/`)
 
 The AWS quick start ([aws.md](aws.md)) is a separate package with its own lockfile, so the app gains no dependencies. It pins `aws-cdk-lib`, `constructs`, and the `aws-cdk` CLI. Bun runs the CDK app and its tests. Node.js 22 runs the CDK CLI.
@@ -67,7 +93,7 @@ On the host, `deploy/ssh/remote.sh`:
 3. Trusts only the Docker bridge gateway as the proxy.
 4. Checks `/healthz` and a sign-in through the port mapping. If either fails, it sets the new data aside, restores the snapshot, and starts the previous image (`binder:previous`).
 
-Merging to `main` does not deploy.
+Merging to `main` does not deploy Binder. It publishes the landing page when site files change (see "Landing page").
 
 ## Data layout (`/data`)
 

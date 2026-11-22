@@ -4,6 +4,11 @@ All notable changes to Binder are recorded here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Added
+
+- A landing page at <https://pb3975.github.io/binder/>, built from `site/` by `scripts/build-site.sh` and deployed by `.github/workflows/pages.yml` when its files change on `main`. It loads nothing from another origin. CI checks that its commands match `README.md` and that it works in Chrome at phone and desktop widths, in light and dark.
+- `docs/images/library-dark.png`, the library in dark mode, from the same e2e run as `library.png`.
+
 ## [0.2.0] - 2026-11-22
 
 First public release. It adds single sign-on, S3 storage, and an AWS quick start.

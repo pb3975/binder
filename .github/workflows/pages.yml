@@ -1,0 +1,45 @@
+name: pages
+# Publishes the landing page (site/) to GitHub Pages at https://pb3975.github.io/binder/.
+# It builds with the same scripts/build-site.sh that CI checks. Binder itself never deploys from here.
+on:
+  push:
+    branches: [main]
+    paths:
+      - site/**
+      - public/fonts/**
+      - public/icon.svg
+      - docs/images/library.png
+      - docs/images/library-dark.png
+      - scripts/build-site.sh
+      - .github/workflows/pages.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: pages
+  cancel-in-progress: false # let a running deploy finish; the next one starts after it
+jobs:
+  build:
+    runs-on: ubuntu-latest # public repo: never self-hosted, so fork PRs cannot reach private machines
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+      - name: Build the landing page
+        run: scripts/build-site.sh _site
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: _site
+          include-hidden-files: true # keeps .nojekyll
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest # public repo: never self-hosted, so fork PRs cannot reach private machines
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
