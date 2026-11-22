@@ -4,6 +4,16 @@ All notable changes to Binder are recorded here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-22
+
+First public release. It adds single sign-on, S3 storage, and an AWS quick start.
+
+### Upgrading from 0.1
+
+- Back up the data folder first. The database moves to schema v2 on first start, and Binder 0.1 cannot read it back.
+- Binder refuses to start with `ALLOWED_LOGINS`, `DEV_ALLOW_ANONYMOUS`, or `BINDER_DEV_ANONYMOUS`. Use `BINDER_AUTH_HEADER` with `BINDER_ALLOWED_USERS`, or `BINDER_AUTH=none`. See [docs/self-hosting.md](docs/self-hosting.md).
+- A setting that belongs to another auth mode now stops startup instead of being ignored.
+
 ### Added
 
 - Version history. Publishing the same `id` again makes a new version. The history shows who published each version, when, their note, and which files changed. Old versions open at their own URL, and restore copies one forward as a new version.
@@ -51,5 +61,6 @@ All notable changes to Binder are recorded here. The format follows [Keep a Chan
 
 Initial private version: one library of agent-built pages behind Tailscale, with previews, filters, and a publish API.
 
-[Unreleased]: https://github.com/pb3975/binder/commits/main
+[Unreleased]: https://github.com/pb3975/binder/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/pb3975/binder/releases/tag/v0.2.0
 [0.1.0]: https://github.com/pb3975/binder

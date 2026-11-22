@@ -4,7 +4,7 @@ This quick start takes a team from an empty AWS account to a private Binder. One
 
 **Deployed in CI: no.** CI checks the stack with unit tests, `cdk synth`, and `cfn-lint`, but it has not yet deployed it to a real account. Please report anything that needs changing.
 
-**Needs Binder 0.2.0, which is not released yet.** S3 storage, `auth=oidc`, and `auth=none` arrive in 0.2.0, so this guide has no working path until that release is out. The stack refuses any image tag older than 0.2.0 at synth.
+**Needs Binder 0.2.0 or later.** S3 storage, `auth=oidc`, and `auth=none` arrive in 0.2.0. The stack refuses any image tag older than 0.2.0 at synth.
 
 ## What you get
 
@@ -29,11 +29,11 @@ Binder supports one writer only. The service never runs two tasks, even during a
 
 ## Deploy with tokens (the default)
 
-1. After the 0.2.0 release, get the code at a release tag, and install the CDK:
+1. Get the code at a release tag, and install the CDK:
 
    ```sh
    git clone https://github.com/pb3975/binder && cd binder
-   git checkout v0.2.0                 # or a later release; the tag exists once 0.2.0 is out
+   git checkout v0.2.0                 # or a later release
    cd deploy/aws
    bun install --frozen-lockfile
    ```
