@@ -5,7 +5,7 @@
 #   fly ssh console -C "binder token create --name you"
 # See docs/self-hosting.md, "Fly.io".
 app = "binder-example"
-primary_region = "ord"
+primary_region = "iad"           # pick the region nearest your team: fly platform regions
 
 [build]
   dockerfile = "Dockerfile"

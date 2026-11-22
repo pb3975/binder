@@ -21,12 +21,12 @@ test("rejects writes without the X-Binder header (artifact pages cannot write)",
 
 test("publishes, lists, serves sandboxed, and versions an artifact", async () => {
   const r = await publish(
-    { title: "Agent Loops", project: "Fleet Ops", kind: "Explainer", tags: "Agents, AI" },
+    { title: "Agent Loops", project: "Research Notes", kind: "Explainer", tags: "Agents, AI" },
     [["explainer.html", "<h1>hi</h1>"]],
   );
   expect(r.status).toBe(201);
   const a = await r.json();
-  expect(a).toMatchObject({ id: "agent-loops", project: "fleet-ops", kind: "explainer", entry: "index.html", tags: ["agents", "ai"], version: 1 });
+  expect(a).toMatchObject({ id: "agent-loops", project: "research-notes", kind: "explainer", entry: "index.html", tags: ["agents", "ai"], version: 1 });
   expect(a.url).toBe(`${b.base}/a/agent-loops`);
 
   const list = await (await fetch(`${b.base}/api/artifacts`, { headers: owner })).json();
