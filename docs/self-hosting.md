@@ -32,7 +32,7 @@ Open <http://localhost:8480>. Agents on the same machine publish with `BINDER_UR
 
 | Target | Build | What you get |
 |---|---|---|
-| `slim` (default) | `docker build -t binder .` | No Chromium. Cards show a generated cover. About 130 MB. |
+| `slim` (default) | `docker build -t binder .` | No Chromium. Cards show a generated cover. About 200 MB. |
 | `full` | `docker build --target full -t binder:full .` | Preview images rendered by Chromium. About 1.3 GB. |
 
 Choose `full` only if you trust the people and agents who publish. Chromium cannot use its own sandbox inside an unprivileged container, so a Chromium bug in a published page would reach the container. Binder still renders every preview through a pinned wrapper, a CDN-only CSP, and a network allowlist; see [design.md](design.md#previews). To switch Compose to `full`, set `target: full` in `docker-compose.yml`.
@@ -66,11 +66,83 @@ Set `BINDER_PUBLIC_URL` in `fly.toml` to your app's URL. Fly stops idle machines
 
 Binder speaks plain HTTP. Put it behind something that adds TLS: Caddy (`reverse_proxy 127.0.0.1:8480`), nginx, Traefik, Cloudflare Tunnel, a cloud load balancer, or `tailscale serve`. Then set `BINDER_PUBLIC_URL` to the HTTPS URL, so links in API responses are right and session cookies get the `Secure` flag.
 
+## Storage
+
+Binder keeps two kinds of data: the SQLite database (artifacts, versions, tokens) and the files of every version plus their previews. `BINDER_STORAGE` says where the files go.
+
+| `BINDER_STORAGE` | Files | Database | Use it for |
+|---|---|---|---|
+| unset or `local` (default) | `versions/` and `thumbs/` in the data folder | `binder.sqlite` in the data folder | Any host with a persistent disk or volume. |
+| `s3://<bucket>/<prefix>` | `<prefix>/versions/...` and `<prefix>/thumbs/...` in the bucket | local, and copied to `<prefix>/db/` by Litestream | Container hosts with no persistent disk, such as AWS Fargate. |
+
+### S3 storage
+
+The image restores the database from S3 at start, then runs Binder under [Litestream](https://litestream.io), which copies every database change to S3. The database is not kept on EFS or another network file system, because SQLite's locking is not safe there.
+
+```sh
+docker run -d --name binder -p 127.0.0.1:8480:8480 \
+  -e BINDER_STORAGE=s3://my-binder-bucket/binder \
+  -e BINDER_SECRET_KEY="$(openssl rand -base64 32)" \
+  -e AWS_REGION=us-east-1 \
+  binder
+```
+
+1. Generate `BINDER_SECRET_KEY` once and keep it in a secret store. It is required with S3. The container's disk is temporary, so a key generated there would change on every restart and end every session and content link.
+2. Set `AWS_REGION` (or `AWS_DEFAULT_REGION`).
+3. Give Binder credentials. On ECS or Fargate, use a task role: Binder and Litestream both read the container credentials endpoint (`AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`, or `AWS_CONTAINER_CREDENTIALS_FULL_URI` with `AWS_CONTAINER_AUTHORIZATION_TOKEN` or `AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE`). Elsewhere, set `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and optionally `AWS_SESSION_TOKEN`.
+4. For MinIO or another S3-compatible store, set `AWS_ENDPOINT_URL_S3` or `AWS_ENDPOINT_URL`. Binder then puts the bucket in the path (path-style addressing).
+5. The role needs `s3:GetObject`, `s3:PutObject`, and `s3:DeleteObject` on `<bucket>/<prefix>/*`, and `s3:ListBucket` on the bucket for that prefix.
+
+`binder token create` works as usual inside the running container. It writes to the local database, and Litestream copies the change to S3.
+
+**Rules and limits:**
+
+- **One Binder task per prefix.** Only one Binder may use a bucket prefix at a time. Run one task, never two (set the ECS service's desired count to 1, and its deployment to stop the old task before it starts the new one), and give each Binder instance its own prefix. Two Binders on one prefix would overwrite each other's database copy. Binder writes version files with a conditional PUT (`If-None-Match: *`), so a second writer that reaches a file first makes the other one's publish fail with "another Binder is writing to this prefix", instead of overwriting it. If S3 answers 409 (another request on the same key at the same time), Binder sends the same conditional PUT again, up to 4 times, then fails with its own message. That is a tripwire, not a lock: it does not protect the database copy.
+- **What a crash can lose (the recovery point).** Every API write (publish, edit, remove, restore) and every `binder token` change is answered only after Litestream confirms that S3 has it. If that copy fails, the write answers `503` and says so. So a crash, a kill, or a lost task loses no write that was answered with success. Two kinds of background writes are not confirmed: a token's "last used" time and the "has a preview" flag. A crash can lose the last second or so of those. A lost preview flag only means the preview renders again.
+- **Health.** `/healthz` answers `503` when Litestream cannot be reached, or when S3 has been behind the local database for more than 60 seconds (for example, when writes to `<prefix>/db/` fail). Point the load balancer or ECS health check at it. Its `replication` field says how far the copy is.
+- **A failed restore stops the container.** If the bucket, region, endpoint, or credentials are wrong, the container exits with an error. It never starts with an empty database, except on the first start, when there is no copy in S3 yet.
+- **Binder serves every file itself.** It reads from S3 and adds the same sandbox headers as with local storage. It never redirects a browser to S3.
+- **Schema v1 data** must be upgraded with local storage first. S3 storage starts at schema v2.
+
+**Backup.** Turn on S3 versioning for the bucket, and a lifecycle rule that expires old object versions after a period you choose. Versioning keeps overwritten and deleted objects, including old copies of the database. Litestream also keeps its own snapshots of the database under `<prefix>/db/` (24 hours by default).
+
+For a copy in another bucket or account, do not copy `<prefix>/db/` while Binder runs. Litestream compacts and deletes files there all the time, so a live `aws s3 sync` can copy a set of files that does not restore. Version files never change after a publish, so `<prefix>/versions/` is safe to copy at any time.
+
+1. Pick a new, empty destination prefix for this backup, such as `backups/2026-11-21`. Never reuse one. Old Litestream files left there could make a restore pick older data, and that data still passes an integrity check.
+2. Stop Binder (set the service's desired count to 0) and wait for the task to stop. A normal stop makes a last copy to S3.
+3. Copy the prefix: `aws s3 sync s3://<bucket>/<prefix> s3://<backup-bucket>/<backup-prefix>`.
+4. Start Binder again.
+5. Check that the database restores. Write a Litestream config for the backup, then restore it to a scratch file:
+
+   ```yaml
+   # check.yml
+   dbs:
+     - path: /tmp/check/binder.sqlite
+       replica:
+         type: s3
+         bucket: <backup-bucket>
+         path: <backup-prefix>/db
+         region: us-east-1
+         # Only for MinIO or another S3-compatible store:
+         # endpoint: https://s3.example.com
+         # force-path-style: true
+   ```
+
+   ```sh
+   litestream restore -config check.yml -integrity-check full /tmp/check/binder.sqlite
+   ```
+
+6. Check that Binder can use it. Copy the backup to another new, scratch prefix, and start a throwaway Binder there (`BINDER_STORAGE=s3://<backup-bucket>/<scratch-prefix>`, the same `BINDER_SECRET_KEY`, and a token you make with `binder token create` in it). Open a few artifacts you expect, and their older versions, and check that their files load. Then stop it and delete the scratch prefix. Do not point a Binder at the backup prefix itself: it would write to it.
+
+A backup is good only once both checks pass.
+
+To back up without stopping Binder, export the database instead of copying `<prefix>/db/`: restore it from the live replica into one consistent SQLite file, as in step 5 with the live bucket and prefix. Then copy `<prefix>/versions/` next to it.
+
 ## Backup and upgrades
 
-- Everything lives in the data folder. Back it up with any file copy while Binder is stopped, or use `sqlite3 binder.sqlite ".backup ..."` plus a copy of `versions/` while it runs.
+- With local storage, everything lives in the data folder. Back it up with any file copy while Binder is stopped, or use `sqlite3 binder.sqlite ".backup ..."` plus a copy of `versions/` while it runs.
 - Binder upgrades the database schema on start. **Back up before upgrading**, because an older Binder cannot read a newer schema and refuses to start on one.
-- Run one Binder process per data folder.
+- Run one Binder process per data folder, or per S3 prefix.
 
 ## Configuration
 
@@ -78,7 +150,7 @@ Binder reads all configuration from environment variables. Every variable is opt
 
 | Variable | Default | What it does |
 |---|---|---|
-| `BINDER_DATA_DIR` | `./data` (`/data` in the image) | Where the database, the signing key, and every version's files live. Back up this folder. |
+| `BINDER_DATA_DIR` | `./data` (`/data` in the image) | Where the database, the signing key, and every version's files live. Back up this folder. With S3 storage, only the database lives here. |
 | `HOST` | `127.0.0.1` (`0.0.0.0` in the image) | Address to listen on. |
 | `PORT` | `8480` | Port to listen on. |
 | `BINDER_PUBLIC_URL` | the request's origin | The URL people use, such as `https://binder.example.com`. Set it behind a TLS proxy so returned links are right. It must be an `http` or `https` origin with no path: Binder does not support hosting under a subpath such as `/binder`. |
@@ -89,6 +161,9 @@ Binder reads all configuration from environment variables. Every variable is opt
 | `BINDER_AUTH_HEADER` | unset | Header mode: trust this request header to name the user, such as `Tailscale-User-Login`. Required with `BINDER_AUTH=header`, and refused with any other mode. |
 | `BINDER_ALLOWED_USERS` | unset | Header and oidc modes. Comma list of logins or emails, `*@example.com`, or `*`. Required in header mode. |
 | `BINDER_TRUSTED_PROXIES` | `127.0.0.1,::1` | Header mode only. Peer addresses (IPs or IPv4 CIDRs) the header is accepted from. |
+| `BINDER_STORAGE` | `local` | `local`, or `s3://<bucket>/<prefix>` to keep files in S3 and copy the database there. See [Storage](#storage). |
+| `BINDER_SECRET_KEY` | unset (`secret.key` in the data folder) | Base64 of at least 32 random bytes. Signs content links and sessions. Required with S3 storage. |
+| `AWS_REGION`, `AWS_ENDPOINT_URL_S3`, `AWS_ACCESS_KEY_ID`, ... | unset | The standard AWS variables, for S3 storage only. See [S3 storage](#s3-storage). |
 | `BINDER_OIDC_ISSUER` | unset | Oidc mode, required. The provider's issuer URL, exactly as its discovery document says it. |
 | `BINDER_OIDC_CLIENT_ID` | unset | Oidc mode, required. The client ID you registered for Binder. |
 | `BINDER_OIDC_CLIENT_SECRET` | unset | Oidc mode. Set it for a confidential client (`client_secret_basic`). Leave it unset for a public client, which uses PKCE only. |

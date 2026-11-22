@@ -1,10 +1,12 @@
-import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join, normalize } from "node:path";
 import { authenticator, readCookie, SESSION_COOKIE, type Principal } from "./auth";
 import { loadConfig, type Config } from "./config";
 import { loadSecret, signer } from "./content";
 import { oidcClient } from "./oidc";
-import { openDb, sha256, versionDir, type Artifact, type ArtifactRow, type FileEntry, type Version } from "./db";
+import { openDb, sha256, type Artifact, type ArtifactRow, type FileEntry, type Version } from "./db";
+import { openReplication, retry, type Replication } from "./replication";
+import { openStorage, thumbKey, typeOf, versionKey, type NewFile, type Storage } from "./storage";
 import { thumbnailer } from "./thumbs";
 import { BUILD, VERSION } from "./version";
 import { ZIP_MAX_ENTRIES, zipStream } from "./zip";
@@ -92,16 +94,22 @@ function httpUrl(s: unknown): string | null | undefined {
 }
 const fail = (status: number, error: string) => json({ error }, status);
 
-export function createApp(cfg: Config, opts: { now?: () => number } = {}) {
+export function createApp(cfg: Config, opts: { now?: () => number; storage?: Storage; replication?: Replication | null } = {}) {
   const now = opts.now ?? Date.now;
   const iso = () => new Date(now()).toISOString();
   for (const d of ["versions", "trash"]) mkdirSync(join(cfg.dataDir, d), { recursive: true });
   // Staged uploads that never committed are not artifact data; clear them on start.
   rmSync(join(cfg.dataDir, "tmp"), { recursive: true, force: true });
   mkdirSync(join(cfg.dataDir, "tmp"), { recursive: true });
-  const db = openDb(cfg.dataDir);
-  const sign = signer(loadSecret(cfg.dataDir), now);
-  const thumbs = thumbnailer({ db, dataDir: cfg.dataDir, signer: sign, chromium: cfg.chromium, hosts: cfg.previewHosts });
+  const storage = opts.storage ?? openStorage(cfg.storage, cfg.dataDir);
+  // With S3 storage, Litestream copies the database; a write is answered only once the copy is in S3.
+  const replication =
+    opts.replication !== undefined
+      ? opts.replication
+      : openReplication(cfg);
+  const db = openDb(cfg.dataDir, { migrate: cfg.storage.kind === "local" });
+  const sign = signer(cfg.secretKey ?? loadSecret(cfg.dataDir), now);
+  const thumbs = thumbnailer({ db, storage, tmpDir: join(cfg.dataDir, "tmp"), signer: sign, chromium: cfg.chromium, hosts: cfg.previewHosts });
   let renderOrigin = "http://127.0.0.1"; // set by started()
   const hostSources = cfg.previewHosts.map((h) => `https://${h}`).join(" ");
   let renderSources = `${renderOrigin} ${hostSources}`;
@@ -146,20 +154,29 @@ export function createApp(cfg: Config, opts: { now?: () => number } = {}) {
     return id;
   }
 
-  /** Records staged files as the next version of `next.id`. Synchronous from here on. */
-  function commitVersion(
-    staging: string,
+  // Every write to an artifact row runs one at a time: publish, restore, edit, and remove. Publish
+  // and restore read the row, await storage, then write the row back; an edit or removal in between
+  // would be overwritten (a removed artifact could come back). The id, the version number, and the
+  // stored files are also decided together, so two requests never claim the same number.
+  let tail: Promise<unknown> = Promise.resolve();
+  function serially<T>(fn: () => Promise<T>): Promise<T> {
+    const run = tail.then(fn, fn);
+    tail = run.catch(() => {});
+    return run;
+  }
+
+  /** Stores `files` as the next version of `next.id` and records it. Call only inside `serially`. */
+  async function commitVersion(
+    files: NewFile[],
     next: Omit<ArtifactRow, "version">,
     v: Omit<Version, "version" | "artifact_id">,
-  ): number {
-    const n = db.commit(next, v, (n) => {
-      const dir = versionDir(cfg.dataDir, next.id, n);
-      mkdirSync(join(dir, ".."), { recursive: true });
-      // A folder left by a crash between rename and commit is an orphan; keep it in trash.
-      if (existsSync(dir)) renameSync(dir, join(cfg.dataDir, "trash", `${next.id}-v${n}-orphan-${now()}`));
-      renameSync(staging, dir);
+  ): Promise<number> {
+    const n = await storage.addVersion(next.id, files, {
+      next: () => db.nextVersion(next.id),
+      commit: (n, place) => db.commit(next, v, n, place),
     });
-    rmSync(thumbs.path(next.id), { force: true });
+    // The version is recorded; an old preview that fails to delete is only stale until the next render.
+    await storage.delete(thumbKey(next.id)).catch((e) => console.warn(`could not remove the old preview of ${next.id}:`, e));
     thumbs.enqueue(next.id);
     return n;
   }
@@ -205,68 +222,74 @@ export function createApp(cfg: Config, opts: { now?: () => number } = {}) {
       paths.find((p) => /\.html?$/i.test(p)) ||
       paths[0]!;
 
-    // Stage the upload first, so a failed request never leaves half a version.
-    const staging = join(cfg.dataDir, "tmp", crypto.randomUUID());
     const entries: FileEntry[] = [];
+    const stored: NewFile[] = [];
     for (const f of files) {
-      const buf = await f.file.arrayBuffer();
-      const dest = join(staging, f.path);
-      await Bun.write(dest, buf);
-      entries.push({ path: f.path, size: f.file.size, type: Bun.file(dest).type, sha256: sha256(buf) });
+      const data = await f.file.bytes();
+      entries.push({ path: f.path, size: f.file.size, type: typeOf(f.path), sha256: sha256(data) });
+      stored.push({ path: f.path, data });
     }
 
     const source = meta.source_url === undefined ? null : httpUrl(meta.source_url);
     if (source === undefined) return fail(400, "'source_url' must be an http or https URL");
     const title = text(meta.title, 200) || entry;
     const wanted = meta.id ? kebab(meta.id, "") : "";
-    const existing = wanted ? db.row(wanted) : null;
-    const id = existing ? existing.id : uniqueId(wanted || kebab(title, "artifact"));
-    const t = iso();
-    const next: Omit<ArtifactRow, "version"> = {
-      id,
-      title,
-      summary: text(meta.summary, 600) || existing?.summary || "",
-      project: kebab(meta.project ?? existing?.project, "general"),
-      domain: kebab(meta.domain ?? existing?.domain, "general"),
-      kind: kebab(meta.kind ?? existing?.kind, "other"),
-      tags: tagList(meta.tags) ?? existing?.tags ?? [],
-      source_url: source ?? existing?.source_url ?? null,
-      published_at: isoDate(meta.published_at, existing?.published_at ?? t),
-      created_at: existing?.created_at ?? t,
-      updated_at: t,
-      thumb: false,
-      deleted_at: null, // publishing a removed id brings it back
-    };
-    commitVersion(staging, next, {
-      title,
-      entry,
-      files: entries,
-      bytes,
-      note: text(meta.note, 300),
-      published_by: who.name,
-      agent: opt(meta.agent, 80),
-      host: opt(meta.host, 80),
-      created_at: t,
+    return serially(async () => {
+      const existing = wanted ? db.row(wanted) : null;
+      const id = existing ? existing.id : uniqueId(wanted || kebab(title, "artifact"));
+      const t = iso();
+      const next: Omit<ArtifactRow, "version"> = {
+        id,
+        title,
+        summary: text(meta.summary, 600) || existing?.summary || "",
+        project: kebab(meta.project ?? existing?.project, "general"),
+        domain: kebab(meta.domain ?? existing?.domain, "general"),
+        kind: kebab(meta.kind ?? existing?.kind, "other"),
+        tags: tagList(meta.tags) ?? existing?.tags ?? [],
+        source_url: source ?? existing?.source_url ?? null,
+        published_at: isoDate(meta.published_at, existing?.published_at ?? t),
+        created_at: existing?.created_at ?? t,
+        updated_at: t,
+        thumb: false,
+        deleted_at: null, // publishing a removed id brings it back
+      };
+      await commitVersion(stored, next, {
+        title,
+        entry,
+        files: entries,
+        bytes,
+        note: text(meta.note, 300),
+        published_by: who.name,
+        agent: opt(meta.agent, 80),
+        host: opt(meta.host, 80),
+        created_at: t,
+      });
+      const a = db.get(id)!;
+      return json({ ...view(a, originOf(req)), updated: Boolean(existing) }, existing ? 200 : 201);
     });
-    const a = db.get(id)!;
-    return json({ ...view(a, originOf(req)), updated: Boolean(existing) }, existing ? 200 : 201);
   }
 
-  function restore(id: string, n: number, who: Principal, req: Request): Response {
-    const row = db.row(id);
-    const old = db.version(id, n);
-    if (!row || row.deleted_at || !old) return fail(404, "not found");
-    const staging = join(cfg.dataDir, "tmp", crypto.randomUUID());
-    cpSync(versionDir(cfg.dataDir, id, n), staging, { recursive: true });
-    const t = iso();
-    const { version: _, ...rest } = row;
-    commitVersion(staging, { ...rest, title: old.title, updated_at: t, thumb: false }, {
-      ...old,
-      note: `Restored version ${n}`,
-      published_by: who.name,
-      created_at: t,
+  function restore(id: string, n: number, who: Principal, req: Request): Promise<Response> {
+    return serially(async () => {
+      const row = db.row(id);
+      const old = db.version(id, n);
+      if (!row || row.deleted_at || !old) return fail(404, "not found");
+      const files: NewFile[] = [];
+      for (const f of old.files) {
+        const data = await storage.read(versionKey(id, n, f.path));
+        if (!data) return fail(500, `version ${n} of ${id} is missing ${f.path} in storage`);
+        files.push({ path: f.path, data });
+      }
+      const t = iso();
+      const { version: _, ...rest } = row;
+      await commitVersion(files, { ...rest, title: old.title, updated_at: t, thumb: false }, {
+        ...old,
+        note: `Restored version ${n}`,
+        published_by: who.name,
+        created_at: t,
+      });
+      return json(view(db.get(id)!, originOf(req)));
     });
-    return json(view(db.get(id)!, originOf(req)));
   }
 
   function history(id: string, req: Request): Response {
@@ -283,14 +306,19 @@ export function createApp(cfg: Config, opts: { now?: () => number } = {}) {
   }
 
   async function patch(id: string, req: Request): Promise<Response> {
-    const row = db.row(id);
-    if (!row || row.deleted_at) return fail(404, "not found");
+    if (!db.get(id)) return fail(404, "not found");
     let m: Record<string, unknown>;
     try {
       m = (await req.json()) as Record<string, unknown>;
     } catch {
       return fail(400, "expected a JSON body");
     }
+    return serially(async () => edit(id, m, req));
+  }
+
+  function edit(id: string, m: Record<string, unknown>, req: Request): Response {
+    const row = db.row(id);
+    if (!row || row.deleted_at) return fail(404, "not found");
     if (m.title !== undefined) row.title = text(m.title, 200) || row.title;
     if (m.summary !== undefined) row.summary = text(m.summary, 600);
     if (m.project !== undefined) row.project = kebab(m.project, "general");
@@ -309,11 +337,13 @@ export function createApp(cfg: Config, opts: { now?: () => number } = {}) {
     return json(view(db.get(id)!, originOf(req)));
   }
 
-  function remove(id: string): Response {
-    if (!db.get(id)) return fail(404, "not found");
-    // A soft delete: every version stays on disk, and publishing the id again restores it.
-    db.softDelete(id, iso());
-    return json({ deleted: id });
+  function remove(id: string): Promise<Response> {
+    return serially(async () => {
+      if (!db.get(id)) return fail(404, "not found");
+      // A soft delete: every version stays on disk, and publishing the id again restores it.
+      db.softDelete(id, iso());
+      return json({ deleted: id });
+    });
   }
 
   /**
@@ -324,7 +354,6 @@ export function createApp(cfg: Config, opts: { now?: () => number } = {}) {
     const row = db.row(id);
     const v = row && !row.deleted_at ? db.version(id, n ?? row.version) : null;
     if (!v) return fail(404, "not found");
-    const dir = versionDir(cfg.dataDir, id, v.version);
     const name = `${id}-v${v.version}`;
     const headers = (filename: string, type: string) => ({
       "content-type": type,
@@ -337,10 +366,12 @@ export function createApp(cfg: Config, opts: { now?: () => number } = {}) {
       const f = v.files[0]!;
       // The id is [\w-]+; keep the extension only when it is plain ASCII, so the header stays well-formed.
       const ext = f.path.match(/\.[A-Za-z0-9]{1,10}$/)?.[0] ?? "";
-      return new Response(Bun.file(join(dir, f.path)), { headers: headers(`${name}${ext}`, f.type || "application/octet-stream") });
+      const file = await storage.read(versionKey(id, v.version, f.path));
+      if (!file) return fail(404, "not found");
+      return new Response(file, { headers: headers(`${name}${ext}`, f.type || "application/octet-stream") });
     }
     if (v.files.length > ZIP_MAX_ENTRIES) return fail(422, `this version has more than ${ZIP_MAX_ENTRIES} files, too many for a zip`);
-    const entries = v.files.map((f) => ({ path: `${name}/${f.path}`, read: () => Bun.file(join(dir, f.path)).bytes() }));
+    const entries = v.files.map((f) => ({ path: `${name}/${f.path}`, read: () => readBytes(versionKey(id, v.version, f.path)) }));
     return new Response(zipStream(entries, new Date(v.created_at)), { headers: headers(`${name}.zip`, "application/zip") });
   }
 
@@ -358,6 +389,12 @@ export function createApp(cfg: Config, opts: { now?: () => number } = {}) {
     return new Response(body, { headers: { "content-type": "text/markdown; charset=utf-8", "cache-control": "no-cache", "x-content-type-options": "nosniff" } });
   }
 
+  async function readBytes(key: string): Promise<Uint8Array> {
+    const f = await storage.read(key);
+    if (!f) throw new Error(`storage is missing ${key}`);
+    return f.bytes();
+  }
+
   /** Serves one file of one version. The token in the path is the only credential. */
   async function content(id: string, n: number, tok: string, rest: string): Promise<Response> {
     const mode = sign.verify(id, n, tok);
@@ -366,11 +403,11 @@ export function createApp(cfg: Config, opts: { now?: () => number } = {}) {
     if (!v || db.row(id)?.deleted_at) return new Response("not found", { status: 404 });
     const path = safePath(rest || v.entry);
     if (!path || !v.files.some((f) => f.path === path)) return new Response("not found", { status: 404 });
-    const file = Bun.file(join(versionDir(cfg.dataDir, id, n), path));
-    if (!(await file.exists())) return new Response("not found", { status: 404 });
+    const file = await storage.read(versionKey(id, n, path));
+    if (!file) return new Response("not found", { status: 404 });
     return new Response(file, {
       headers: {
-        "content-type": file.type,
+        "content-type": typeOf(path),
         // Render mode also limits every fetch to Binder and a few public CDNs, so a preview
         // cannot capture a private http or https service. Frames may only come from Binder.
         "content-security-policy":
@@ -464,6 +501,27 @@ export function createApp(cfg: Config, opts: { now?: () => number } = {}) {
     return go(r.next, ...clear, sessionCookie(req, value, maxAge));
   }
 
+  /**
+   * A successful write is answered only once it is durable: with S3 storage, the database copy must be
+   * in S3 first. Otherwise a task stop right after a 201 could lose the write (see src/replication.ts).
+   */
+  async function durable(res: Response): Promise<Response> {
+    if (!replication || res.status >= 400) return res;
+    try {
+      await replication.flush();
+      return res;
+    } catch (e) {
+      console.error(`write not confirmed in S3: ${(e as Error).message}`);
+      return fail(503, `the change is saved on this server, but copying it to S3 failed, so it may be lost if the server stops: ${(e as Error).message}`);
+    }
+  }
+
+  async function healthz(): Promise<Response> {
+    if (!replication) return json({ ok: true, version: VERSION, build: BUILD });
+    const h = await replication.health();
+    return json({ ok: h.ok, version: VERSION, build: BUILD, replication: h.detail }, h.ok ? 200 : 503);
+  }
+
   async function fetch(req: Request, server?: { requestIP(r: Request): { address: string } | null }): Promise<Response> {
     const url = new URL(req.url);
     let path: string;
@@ -475,7 +533,7 @@ export function createApp(cfg: Config, opts: { now?: () => number } = {}) {
     const method = req.method;
     let m: RegExpMatchArray | null;
 
-    if (path === "/healthz") return json({ ok: true, version: VERSION, build: BUILD });
+    if (path === "/healthz") return healthz();
     if (cfg.auth.mode === "none" && !hostAllowed(req))
       return fail(421, `BINDER_AUTH=none answers only on localhost. Open Binder at http://localhost, or set BINDER_PUBLIC_URL to the URL you use.`);
     if (path === "/llms.txt") return llmsTxt(req);
@@ -503,7 +561,15 @@ export function createApp(cfg: Config, opts: { now?: () => number } = {}) {
     const who = result.who;
     if (path === "/api/session" && method === "GET") return json(who);
     if (isWrite && who.scope !== "write") return fail(403, "this identity can read but not write");
+    // Decided here, after the router decoded the path and the caller may write: every write that reaches a
+    // handler waits for the copy, whatever spelling of the URL reached it.
+    const res = await authorized(req, path, method, who);
+    return isWrite ? durable(res) : res;
+  }
 
+  /** Routes for an identified caller. Writes here are made durable by the caller, `fetch`. */
+  async function authorized(req: Request, path: string, method: string, who: Principal): Promise<Response> {
+    let m: RegExpMatchArray | null;
     if (path === "/api/artifacts") {
       if (method === "GET") return json({ artifacts: db.list().map((a) => view(a, originOf(req))) });
       if (method === "POST") return publish(req, who);
@@ -524,7 +590,7 @@ export function createApp(cfg: Config, opts: { now?: () => number } = {}) {
       return restore(m[1]!, Number(m[2]), who, req);
     if ((m = path.match(/^\/api\/artifacts\/([\w-]+)\/thumbnail$/)) && method === "POST") {
       if (!db.get(m[1]!)) return fail(404, "not found");
-      rmSync(thumbs.path(m[1]!), { force: true });
+      await storage.delete(thumbKey(m[1]!));
       db.setThumb(m[1]!, false);
       thumbs.enqueue(m[1]!);
       return json({ queued: m[1] }, 202);
@@ -540,8 +606,8 @@ export function createApp(cfg: Config, opts: { now?: () => number } = {}) {
       });
     }
     if ((m = path.match(/^\/thumb\/([\w-]+)\.png$/))) {
-      const f = Bun.file(thumbs.path(m[1]!));
-      return (await f.exists())
+      const f = await storage.read(thumbKey(m[1]!));
+      return f
         ? new Response(f, { headers: { "content-type": "image/png", "cache-control": "private, max-age=31536000, immutable" } })
         : new Response("not found", { status: 404 });
     }
@@ -556,18 +622,24 @@ export function createApp(cfg: Config, opts: { now?: () => number } = {}) {
     thumbs.start(loopbackOrigin);
   }
 
-  return { fetch, started, db, thumbs };
+  return { fetch, started, db, thumbs, storage, replication };
 }
 
 if (import.meta.main) {
   let cfg: Config;
+  let app: ReturnType<typeof createApp>;
   try {
     cfg = loadConfig();
+    app = createApp(cfg);
+    // Fail now, not on the first publish, when S3 cannot be reached with these settings.
+    await app.storage.check();
+    // Litestream starts its control socket next to Binder. Wait for it, and for the database to be in S3
+    // (this also makes Litestream pick up a new, empty database at once instead of on its first tick).
+    if (app.replication) await retry(() => app.replication!.flush(), 30_000);
   } catch (e) {
-    console.error(String((e as Error).message));
+    console.error(`binder: cannot start: ${(e as Error).message}`);
     process.exit(1);
   }
-  const app = createApp(cfg);
   if (cfg.auth.mode === "none")
     console.warn("BINDER_AUTH=none: anyone who can reach Binder can read and publish. Use it only on your own machine.");
   if (cfg.auth.mode === "oidc" && cfg.auth.allowHttp)
@@ -579,8 +651,12 @@ if (import.meta.main) {
     hostname: cfg.host,
     maxRequestBodySize: 80 * 1024 * 1024,
     fetch: app.fetch,
+    error(e) {
+      console.error(e);
+      return new Response("internal error", { status: 500 });
+    },
   });
   const loopback = ["0.0.0.0", "::", "127.0.0.1", "localhost"].includes(cfg.host) ? "127.0.0.1" : cfg.host;
   app.started(`http://${loopback}:${server.port}`);
-  console.log(`binder ${VERSION}${BUILD ? ` (${BUILD})` : ""} on http://${server.hostname}:${server.port} (data ${cfg.dataDir}, previews ${app.thumbs.available ? "on" : "off"})`);
+  console.log(`binder ${VERSION}${BUILD ? ` (${BUILD})` : ""} on http://${server.hostname}:${server.port} (data ${cfg.dataDir}, files ${app.storage.location}, previews ${app.thumbs.available ? "on" : "off"})`);
 }

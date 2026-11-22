@@ -14,6 +14,12 @@ export type Config = {
   previewHosts: string[];
   /** How Binder knows who a person is. Bearer tokens work in every mode. */
   auth: AuthConfig;
+  /** Where version files and previews live. The database always stays in `dataDir`. */
+  storage: StorageConfig;
+  /** The key that signs content URLs and sessions, from BINDER_SECRET_KEY. Null means data/secret.key. */
+  secretKey: Buffer | null;
+  /** Litestream's control socket (BINDER_LITESTREAM_SOCKET). Used, and required, only with S3 storage. */
+  litestreamSocket: string | null;
 };
 
 /**
@@ -66,6 +72,14 @@ const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 export const secureEnough = (u: URL, allowHttp: boolean) =>
   u.protocol === "https:" || (u.protocol === "http:" && (allowHttp || LOOPBACK_HOSTS.has(u.hostname)));
 
+/**
+ * `local` keeps files under the data folder. `s3` keeps them in a bucket, under `prefix`:
+ * versions/<id>/<n>/<path>, thumbs/<id>.png, and db/ for the Litestream replica of the database.
+ */
+export type StorageConfig =
+  | { kind: "local" }
+  | { kind: "s3"; bucket: string; prefix: string; region: string; endpoint: string | null };
+
 /** Public CDNs that agent-built pages commonly load scripts, styles, and fonts from. */
 export const DEFAULT_PREVIEW_HOSTS = [
   "cdnjs.cloudflare.com", "cdn.jsdelivr.net", "unpkg.com", "esm.sh", "cdn.tailwindcss.com", "code.jquery.com",
@@ -105,6 +119,16 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   const trustedProxies = env.BINDER_TRUSTED_PROXIES ? list(env.BINDER_TRUSTED_PROXIES) : ["127.0.0.1", "::1"];
   for (const p of trustedProxies) if (!parseAddress(p)) throw new Error(`BINDER_TRUSTED_PROXIES: not an IP or IPv4 CIDR: ${p}`);
 
+  const storage = storageConfig(env);
+  const secretKey = env.BINDER_SECRET_KEY ? secretKeyFrom(env.BINDER_SECRET_KEY) : null;
+  // The task's disk is gone after every restart, so a generated key would end every session and link.
+  if (storage.kind === "s3" && !secretKey)
+    throw new Error("BINDER_STORAGE is s3, so BINDER_SECRET_KEY is required: base64 of at least 32 random bytes (openssl rand -base64 32)");
+  const litestreamSocket = env.BINDER_LITESTREAM_SOCKET?.trim() || null;
+  // Without Litestream the database would never reach S3, and the next start would lose it.
+  if (storage.kind === "s3" && !litestreamSocket)
+    throw new Error("BINDER_STORAGE is s3, so Binder must run under Litestream (the container image does this); BINDER_LITESTREAM_SOCKET is not set");
+
   return {
     dataDir: dataDirOf(env),
     host: env.HOST ?? "127.0.0.1",
@@ -113,6 +137,9 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     chromium,
     previewHosts,
     auth: loadAuth(env, publicUrl, trustedProxies),
+    storage,
+    secretKey,
+    litestreamSocket,
   };
 }
 
@@ -198,6 +225,42 @@ function loadAuth(env: Record<string, string | undefined>, publicUrl: string | n
     signingAlg,
     hostedDomain,
   };
+}
+
+/** Parses BINDER_STORAGE: unset or `local`, or `s3://<bucket>/<prefix>` with the standard AWS variables. */
+export function storageConfig(env: Record<string, string | undefined>): StorageConfig {
+  const raw = env.BINDER_STORAGE?.trim() || "local";
+  if (raw === "local") return { kind: "local" };
+  const m = raw.match(/^s3:\/\/([^/]+)\/?(.*)$/);
+  if (!m) throw new Error(`BINDER_STORAGE must be local or s3://<bucket>/<prefix>, not ${raw}`);
+  const bucket = m[1]!;
+  const prefix = m[2]!.replace(/\/+$/, "");
+  // Bucket naming rules, and a conservative key prefix, so both are safe in the Litestream config too.
+  if (!/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(bucket)) throw new Error(`BINDER_STORAGE: not an S3 bucket name: ${bucket}`);
+  // No "." or ".." segments: S3 keeps them literally, but a path library (Litestream's too) would fold them.
+  if (prefix && (!/^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*$/.test(prefix) || prefix.split("/").some((s) => s === "." || s === "..")))
+    throw new Error(`BINDER_STORAGE: the prefix may use letters, digits, . _ - and single slashes, with no . or .. parts: ${prefix}`);
+  const region = env.AWS_REGION?.trim() || env.AWS_DEFAULT_REGION?.trim();
+  if (!region || !/^[a-z0-9-]+$/.test(region)) throw new Error("BINDER_STORAGE is s3, so AWS_REGION (or AWS_DEFAULT_REGION) must name a region");
+  const rawEndpoint = env.AWS_ENDPOINT_URL_S3?.trim() || env.AWS_ENDPOINT_URL?.trim() || null;
+  let endpoint: string | null = null;
+  if (rawEndpoint) {
+    const u = URL.parse(rawEndpoint);
+    if (!u || (u.protocol !== "http:" && u.protocol !== "https:") || u.search || u.hash || u.username)
+      throw new Error(`AWS_ENDPOINT_URL_S3 / AWS_ENDPOINT_URL must be an http or https URL: ${rawEndpoint}`);
+    endpoint = u.href.replace(/\/+$/, "");
+  }
+  return { kind: "s3", bucket, prefix, region, endpoint };
+}
+
+/** BINDER_SECRET_KEY: strict base64 (standard or url-safe) of at least 32 bytes. */
+function secretKeyFrom(s: string): Buffer {
+  const t = s.trim();
+  // Buffer.from(_, "base64") skips characters it does not know, so check the alphabet first.
+  if (!/^[A-Za-z0-9+/_-]+={0,2}$/.test(t)) throw new Error("BINDER_SECRET_KEY must be base64");
+  const key = Buffer.from(t, "base64");
+  if (key.length < 32) throw new Error(`BINDER_SECRET_KEY must decode to at least 32 bytes, not ${key.length}`);
+  return key;
 }
 
 /** Parses an IP or an IPv4 CIDR into a matcher. IPv4-mapped IPv6 peers (::ffff:a.b.c.d) match their IPv4 form. */

@@ -171,7 +171,7 @@ describe("sign-in", () => {
 
   test("tokens still work, for agents and for the paste-a-token sign-in", async () => {
     const out: string[] = [];
-    expect(run(["token", "create", "--name", "agent"], { BINDER_DATA_DIR: b.dataDir }, (s) => out.push(s))).toBe(0);
+    expect(await run(["token", "create", "--name", "agent"], { BINDER_DATA_DIR: b.dataDir }, (s) => out.push(s))).toBe(0);
     const pub = await fetch(`${b.base}/api/artifacts`, { method: "POST", headers: { authorization: `Bearer ${out[0]}`, "x-binder": "1" }, body: form({ id: "agent-1" }, [["index.html", "x"]]) });
     expect(await pub.json()).toMatchObject({ published_by: "agent" });
     const s = await fetch(`${b.base}/api/session`, { method: "POST", headers: { "x-binder": "1" }, body: JSON.stringify({ token: out[0] }) });

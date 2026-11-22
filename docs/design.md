@@ -51,6 +51,18 @@ data/
 - Version numbers are allocated inside the same synchronous SQLite transaction that renames the staging folder into place, so two concurrent publishes to one `id` get different numbers.
 - Binder is a single process. Two processes on one data folder are not supported.
 
+### S3 storage
+
+With `BINDER_STORAGE=s3://<bucket>/<prefix>`, version files and previews live in S3 under the same keys (`versions/<id>/<n>/<path>`, `thumbs/<id>.png`). This is for container hosts with no persistent disk, such as AWS Fargate.
+
+- **The database stays local and Litestream copies it to S3** (`<prefix>/db/`). SQLite on a network file system such as EFS is not safe, because its locking depends on the file system. At start, the container restores the database from S3. Only "no replica yet" may start empty; any other restore failure stops the container. Litestream then runs Binder as its child process and copies each change within about a second.
+- **No answered write is lost.** Litestream copies on its own one-second schedule, which leaves two gaps. Litestream 0.5.18's final sync skipped a database it had not picked up yet, so a write in the first second after start, followed by a stop, was lost. And a copy that kept failing was invisible while writes still succeeded. So Binder asks Litestream, through its control socket, to copy and wait (`POST /sync` with `wait`) before it answers any API write, and the `binder token` CLI does the same. If the copy fails, the write answers `503`. `/healthz` fails when S3 is more than 60 seconds behind. Only background writes (a token's last-used time, the preview flag) can still be lost in a crash.
+- **Orphans.** A version whose row was never confirmed keeps its files in S3, and its number is skipped, not reused.
+- **Writes.** Publishes and restores run one at a time in the process. Binder uploads every file, then writes the version row. A failed upload removes what it uploaded and records nothing. The skipped-number rule means files of a recorded version are never overwritten.
+- **Reads.** Content is read from S3 by Binder and served with the same headers as local files. Binder never redirects to S3: a presigned URL would not carry the CSP `sandbox`.
+- **One writer.** Binder must be the only process using a prefix. Two Binders on one prefix would each replicate their own database over the other. Version files are written with `If-None-Match: *`, so a second writer fails loudly before it can overwrite one.
+- **Credentials** come from the standard AWS variables, or from the ECS container endpoint (task role), refreshed before they expire.
+
 Content-addressed storage (one blob per unique file) would remove duplicate bytes between versions. It was rejected for now: artifacts are small, and a plain folder per version keeps relative links working, keeps previews simple, and keeps the data folder readable by a person.
 
 ## Serving untrusted HTML
@@ -152,6 +164,6 @@ All configuration comes from environment variables with safe defaults. See [self
 
 ## Deployment targets
 
-Docker and docker compose, bare Bun, and Fly.io as the documented cloud example. The image is built for `linux/amd64` and `linux/arm64`. CI boots the real `slim` and `full` images from a clean volume, makes the first token with the CLI, publishes, views, checks history, runs as a fixed `--user`, and runs the browser sandbox and UI tests.
+Docker and docker compose, bare Bun, and Fly.io as the documented cloud example. AWS Fargate (no persistent disk) uses S3 storage; see "S3 storage" above. The image is built for `linux/amd64` and `linux/arm64`. CI boots the real `slim` and `full` images from a clean volume, makes the first token with the CLI, publishes, views, checks history, runs as a fixed `--user`, and runs the browser sandbox and UI tests.
 
 The container starts as root only to give `/data` to the unprivileged `bun` user, then drops to it. A fresh cloud volume is root-owned, so an image that started as `bun` could not write to it.

@@ -2,6 +2,22 @@
 
 Newest first. Each entry says what was decided and why. [design.md](design.md) has the full reasoning.
 
+## 2026-11-21: S3 storage for a container host with no disk (AWS Fargate)
+
+**Need:** run Binder on AWS Fargate. A Fargate task has no persistent disk: everything on it is gone when the task stops or moves.
+
+- **Version files and previews go to S3 when `BINDER_STORAGE=s3://<bucket>/<prefix>`.** S3 is the durable store. Keys: `versions/<id>/<n>/<path>`, `thumbs/<id>.png`, and `db/` for the database replica. Local disk stays the default and works as before.
+- **The SQLite database stays on the task's local disk, and Litestream copies it to S3.** SQLite on EFS or another network file system is not safe: its locks depend on the file system, and NFS locks are not reliable. Litestream restores the database from S3 at start, then runs Binder as its child and copies every change. Invariant 4 ("one process") gets one exception in S3 mode: Litestream supervises Binder in the same container.
+- **No answered write is lost.** Litestream copies asynchronously (`sync-interval` 1s). A cross-review measured a write lost after 201: with Litestream 0.5.18, a stop before the first tick skipped the final sync. So every API write and every `binder token` change waits for Litestream's `POST /sync` with `wait` on its control socket. A failed copy answers 503. `/healthz` fails when S3 is more than 60 seconds behind. Only background writes (last-used time, preview flag) can be lost in a crash.
+- **A failed restore stops the container.** Only "no replica yet" may start an empty database. Otherwise an empty Binder with wrong credentials or a typo in the bucket could later replicate over the real data.
+- **Content still goes through Binder, never a redirect to S3.** A presigned URL would drop the CSP `sandbox` header. Measured: `new Response(s3File)` in Bun answers 302 to a presigned URL, so the storage interface returns plain Blobs and never an S3File.
+- **One writer per prefix, with a tripwire.** Version files are written with a conditional PUT (`If-None-Match: *`), so a second Binder on the prefix fails loudly instead of overwriting a file. Bun.S3Client cannot send the header, so Binder sends a presigned PUT. Binder must be the only process that uses a prefix. Inside the process, publishes and restores run one at a time, so ids and version numbers are decided together with the uploads. A version row is written only after every file is in S3. A number that has files but no row (an upload that never committed, or a row lost in the loss window) is skipped, so those files are never overwritten.
+- **`BINDER_SECRET_KEY` is required with S3.** A key generated on an ephemeral disk would change on every restart and end every session and content URL.
+- **Binder fetches ECS container credentials itself.** Measured: `Bun.S3Client` never calls the container credentials endpoint (with only `AWS_CONTAINER_CREDENTIALS_FULL_URI` set it throws "Missing S3 credentials"). `src/aws.ts` reads static keys first, then the endpoint, and refreshes 5 minutes before `Expiration`. Litestream uses the AWS SDK for Go, which reads the endpoint itself; CI checks both against a fake endpoint.
+- **Litestream from upstream commit `a8e0472`, built from source, in both images.** No release has the fixes Binder needs yet; 0.5.18 is the newest. The commit holds three of them: issue 1580 (`bcd69ae`, PR 1581: a writer killed mid-commit gets uncommitted frames replicated, so a restore is corrupt), the sync target pinned before the upload (`93eba41`, PR 1562: without it, a write made during an upload can be counted as uploaded, and Binder answers 503 for a write that is durable), and snapshot WAL reads that stop at the advertised end (`a8e0472`, PR 1491). The two earlier commits are ancestors of `a8e0472` (checked with GitHub's compare API). The Dockerfile checks out the exact commit, builds with CGO off, `-trimpath`, and no VCS stamp, and checks the binary's sha256 for amd64 and arm64. The build is reproducible: a no-cache rebuild gives the same sums, and CI's native arm64 build matched the cross-built sum for the previous pin. Switch to the first release that has all three. The binary is static and adds about 55 MB to each image.
+- **CI uses Bitnami's last free MinIO build, pinned by digest.** `minio/minio` is no longer on Docker Hub. MinIO is only a test fixture here; any S3-compatible store works.
+- **S3 storage starts at schema v2.** The v1 migration moves folders on local disk, so Binder refuses a v1 database in S3 mode. Migrate with local storage first.
+
 ## 2026-11-21: Four auth modes: token, none, oidc, header
 
 **Need:** a team with single sign-on can use Binder without a proxy in front, and one person on a laptop can use it without tokens. Agents keep working the same way everywhere.
@@ -17,7 +33,7 @@ Newest first. Each entry says what was decided and why. [design.md](design.md) h
 - **A refused SSO sign-in redirects to `/?signin=<code>`,** and the UI shows fixed text for each code. A link cannot inject words, and the server log keeps the detail.
 - **`none` replaces `BINDER_DEV_ANONYMOUS`** and answers only for loopback names and `BINDER_PUBLIC_URL`'s host (421 otherwise), against DNS rebinding. Binder refuses to start when it sees `BINDER_DEV_ANONYMOUS`.
 - **Existing deployments keep working:** with `BINDER_AUTH` unset, `BINDER_AUTH_HEADER` alone still means header mode. `BINDER_AUTH_HEADER` with any other explicit mode stops startup, so auth never changes silently.
-- **The token CLI reads only the data folder,** so a broken auth setting never stops an admin from making a token.
+- **The token CLI ignores every auth setting,** so a broken one never stops an admin from making a token. It still reads storage settings, so with S3 a token change waits for the copy to S3.
 - Rejected: storing passwords in Binder (a second identity system to secure), and RP-initiated logout at the provider (sign-out ends the Binder session only; the provider's own session is the provider's to end).
 
 ## 2026-11-21: Go public as a new repository (Inbox: binder/go-public)

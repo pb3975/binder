@@ -6,6 +6,8 @@
 - TypeScript 5.9 for type checks only (`devDependencies`).
 - Chromium for preview images. Locally the server uses `/usr/bin/chromium` if present; previews are skipped when it is missing.
 - Docker for the image (`oven/bun:1.4.2-alpine`; the `full` target adds Alpine `chromium`, the `slim` target does not).
+- [Litestream](https://litestream.io) in both images, for S3 storage only. The Dockerfile builds upstream commit `LITESTREAM_COMMIT` from source (Go 1.26.11, pinned by digest) and checks the binary's sha256 for each architecture. To change it, set the commit, build `--target litestream` for `linux/amd64` and `linux/arm64`, and copy the two new sums from the failed check. Once a release contains the fix for upstream issue 1580, go back to the release download.
+- MinIO for the S3 end-to-end test only (`bitnamilegacy/minio`, pinned by digest in `scripts/e2e-s3.sh`).
 
 ## Run locally
 
@@ -26,8 +28,12 @@ bun run check                    # tsc --noEmit && bun test (contract, history, 
 scripts/e2e.sh                   # builds the image, boots a clean container, runs test/e2e/ with real Chromium
 TARGET=slim scripts/e2e.sh       # the same for the image without Chromium
 SHOTS=/tmp/shots scripts/e2e.sh  # also saves UI screenshots
+scripts/e2e-s3.sh                # S3 storage with Litestream, against MinIO (see the script's header)
+TARGET=full scripts/e2e-s3.sh    # the same, plus previews stored in S3
 scripts/e2e-oidc.sh              # signs in through a real Keycloak (quay.io/keycloak/keycloak:26.8.2) in Chromium
 ```
+
+`bun run check` tests the local storage backend. To test the S3 backend against your own MinIO, set `BINDER_TEST_S3=s3://<bucket>/<prefix>` and the `AWS_*` variables, then run `bun test test/storage.test.ts`. `scripts/e2e-s3.sh` does this in a container.
 
 `scripts/e2e-oidc.sh` starts Keycloak and the `full` image on one Docker network. Chromium runs inside the Binder container, so Binder and the browser both reach Keycloak as `http://keycloak:8080`. The realm, users, and client secret in `test/e2e/keycloak-realm.json` are synthetic. Unit tests for OIDC (`test/oidc.test.ts`) use a fake provider with real RS256, PS256, and ES256 keys, and need no network.
 
@@ -58,3 +64,5 @@ Merging to `main` does not deploy.
 - `thumbs/<id>.png` — 640x400 previews of the current version.
 - `tmp/` — staged uploads, cleared on start.
 - `trash/` — files from schema v1 and orphaned folders. Binder never reads it.
+
+With S3 storage, `/data` holds only `binder.sqlite` (restored by Litestream at start) and `tmp/`. `versions/` and `thumbs/` are keys in the bucket under the prefix, the Litestream replica is under `<prefix>/db/`, and the signing key comes from `BINDER_SECRET_KEY`.

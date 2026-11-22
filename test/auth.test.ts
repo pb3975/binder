@@ -1,12 +1,12 @@
 // The auth boundary: tokens, sessions, the trusted header, and scopes.
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { run } from "../src/cli";
 import { loadConfig } from "../src/config";
 import { form, headerAuth, startBinder } from "./helpers";
 
-function token(dataDir: string, name: string, scope = "write") {
+async function token(dataDir: string, name: string, scope = "write") {
   const out: string[] = [];
-  expect(run(["token", "create", "--name", name, "--scope", scope], { BINDER_DATA_DIR: dataDir }, (s) => out.push(s))).toBe(0);
+  expect(await run(["token", "create", "--name", name, "--scope", scope], { BINDER_DATA_DIR: dataDir }, (s) => out.push(s))).toBe(0);
   return out[0]!;
 }
 const bearer = (t: string, extra: Record<string, string> = {}) => ({ authorization: `Bearer ${t}`, ...extra });
@@ -15,8 +15,12 @@ describe("token mode (no proxy header configured)", () => {
   const b = startBinder({ auth: { mode: "token" } });
   afterAll(() => b.stop());
   const api = (path: string, init: RequestInit = {}) => fetch(b.base + path, init);
-  const alice = token(b.dataDir, "alice");
-  const reader = token(b.dataDir, "viewer", "read");
+  let alice = "";
+  let reader = "";
+  beforeAll(async () => {
+    alice = await token(b.dataDir, "alice");
+    reader = await token(b.dataDir, "viewer", "read");
+  });
 
   test("tokens are bnd_<id>_<secret> and only their hash is stored", async () => {
     expect(alice).toMatch(/^bnd_[0-9a-f]{12}_[\w-]{43}$/);
@@ -82,20 +86,20 @@ describe("token mode (no proxy header configured)", () => {
     const tampered = cookie.replace(/\.(\d+)\./, (_, e) => `.${Number(e) + 1}.`);
     expect((await api("/api/session", { headers: { cookie: tampered } })).status).toBe(401);
 
-    expect(run(["token", "revoke", "alice"], { BINDER_DATA_DIR: b.dataDir }, () => {})).toBe(0);
+    expect(await run(["token", "revoke", "alice"], { BINDER_DATA_DIR: b.dataDir }, () => {})).toBe(0);
     expect((await api("/api/session", { headers: { cookie } })).status).toBe(401);
     expect((await api("/api/artifacts", { headers: bearer(alice) })).status).toBe(401);
   });
 
-  test("the CLI lists tokens without secrets and refuses duplicate live names", () => {
+  test("the CLI lists tokens without secrets and refuses duplicate live names", async () => {
     const lines: string[] = [];
-    run(["token", "list"], { BINDER_DATA_DIR: b.dataDir }, (s) => lines.push(s));
+    await run(["token", "list"], { BINDER_DATA_DIR: b.dataDir }, (s) => lines.push(s));
     expect(lines.join("\n")).toContain("alice");
     expect(lines.join("\n")).toContain("REVOKED");
     expect(lines.join("\n")).not.toContain("bnd_");
-    expect(run(["token", "create", "--name", "viewer"], { BINDER_DATA_DIR: b.dataDir }, () => {})).toBe(1);
+    expect(await run(["token", "create", "--name", "viewer"], { BINDER_DATA_DIR: b.dataDir }, () => {})).toBe(1);
     // A revoked name can be reused.
-    expect(run(["token", "create", "--name", "alice"], { BINDER_DATA_DIR: b.dataDir }, () => {})).toBe(0);
+    expect(await run(["token", "create", "--name", "alice"], { BINDER_DATA_DIR: b.dataDir }, () => {})).toBe(0);
   });
 });
 
@@ -140,7 +144,7 @@ describe("none mode (BINDER_AUTH=none, a laptop)", () => {
   });
 
   test("a token still names the publisher, and a bad one is still refused", async () => {
-    const r = await fetch(`${b.base}/api/artifacts`, { method: "POST", headers: bearer(agent, { "x-binder": "1" }), body: form({ id: "n2" }, [["index.html", "x"]]) });
+    const r = await fetch(`${b.base}/api/artifacts`, { method: "POST", headers: bearer(await agent, { "x-binder": "1" }), body: form({ id: "n2" }, [["index.html", "x"]]) });
     expect(await r.json()).toMatchObject({ published_by: "agent" });
     expect((await fetch(`${b.base}/api/artifacts`, { headers: bearer("bnd_nope") })).status).toBe(401);
   });
@@ -196,7 +200,7 @@ describe("upgrades and fresh installs", () => {
     const raw = new Database(`${dir}/binder.sqlite`);
     raw.exec("DROP TABLE tokens"); // the shape main had after #1
     raw.close();
-    expect(run(["token", "create", "--name", "after-upgrade"], { BINDER_DATA_DIR: dir }, () => {})).toBe(0);
+    expect(await run(["token", "create", "--name", "after-upgrade"], { BINDER_DATA_DIR: dir }, () => {})).toBe(0);
   });
 
   test("the CLI works before the server has ever created the data folder", async () => {
@@ -204,7 +208,7 @@ describe("upgrades and fresh installs", () => {
     const { tmpdir } = await import("node:os");
     const dir = `${mkdtempSync(`${tmpdir()}/binder-fresh-`)}/not/yet/here`;
     expect(existsSync(dir)).toBe(false);
-    expect(run(["token", "create", "--name", "first"], { BINDER_DATA_DIR: dir }, () => {})).toBe(0);
+    expect(await run(["token", "create", "--name", "first"], { BINDER_DATA_DIR: dir }, () => {})).toBe(0);
   });
 });
 
@@ -283,7 +287,7 @@ describe("configuration", () => {
     const { mkdtempSync } = await import("node:fs");
     const { tmpdir } = await import("node:os");
     const dir = mkdtempSync(`${tmpdir()}/binder-cli-`);
-    expect(run(["token", "create", "--name", "x"], { BINDER_DATA_DIR: dir, BINDER_AUTH: "oidc" }, () => {})).toBe(0);
+    expect(await run(["token", "create", "--name", "x"], { BINDER_DATA_DIR: dir, BINDER_AUTH: "oidc" }, () => {})).toBe(0);
   });
   test("header mode needs an allowlist, and proxies must parse", () => {
     expect(() => loadConfig({ BINDER_AUTH_HEADER: "Remote-User" })).toThrow(/BINDER_ALLOWED_USERS/);
