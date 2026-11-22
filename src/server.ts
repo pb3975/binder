@@ -377,7 +377,8 @@ export function createApp(cfg: Config, opts: { now?: () => number } = {}) {
     const v = db.version(id, n);
     if (!v) return new Response("not found", { status: 404 });
     const prefix = `/c/${id}/${n}/${tok}/`;
-    const src = prefix + v.entry;
+    // The entry is a publisher-chosen file name; encode each segment so it stays inside the attribute.
+    const src = prefix + v.entry.split("/").map(encodeURIComponent).join("/");
     return new Response(
       `<!doctype html><style>html,body,iframe{margin:0;border:0;width:100%;height:100%;display:block}</style>` +
         `<iframe sandbox="allow-scripts" src="${src}"></iframe>`,
