@@ -2,6 +2,17 @@
 
 Newest first. Each entry says what was decided and why. [design.md](design.md) has the full reasoning.
 
+## 2026-11-21: AWS quick start on ECS Fargate and S3
+
+**Need:** a team can run a private Binder on AWS from an empty account with one command, at low cost, without weakening auth.
+
+- **One ECS Fargate task (arm64, Graviton) with S3 as the durable store, and no persistent disk.** Fargate tasks have only ephemeral storage. Litestream in the container replicates SQLite to `<prefix>/db` and restores it at start, and artifact files go to the same bucket.
+- **One writer, enforced by the deployment settings.** `desiredCount` 1, minimum healthy 0 percent, maximum 100 percent, and the circuit breaker with rollback. ECS stops the old task before it starts the new one, so a deploy is a short outage, never two writers on one database.
+- **AWS CDK in TypeScript, in `deploy/aws/` with its own `package.json` and lockfile.** The Binder app gains no dependencies. `aws-cdk-lib`, `constructs`, and the `aws-cdk` CLI are pinned to exact versions. Terraform may come later.
+- **Private by default: an internal ALB, and a VPC with public subnets and no NAT gateway.** A NAT gateway costs about 32 USD a month, more than the rest of the stack. The task gets a public IP to pull its image and reach an OIDC issuer, and its security group accepts only the load balancer. S3 traffic uses a gateway endpoint.
+- **Refuse unsafe combinations at synth.** `internetFacing` with `auth=none`, `internetFacing` without HTTPS, and `oidc` without HTTPS. OIDC also needs an allowlist (`allowedUsers` or `allowedGroups`). `auth=header` is refused, because an ALB alone does not sign people in or overwrite a user header.
+- **The bucket and `BINDER_SECRET_KEY` are retained on `cdk destroy`.** Binder never hard-deletes data. `bucketName` lets a new stack take a kept bucket back.
+
 ## 2026-11-21: S3 storage for a container host with no disk (AWS Fargate)
 
 **Need:** run Binder on AWS Fargate. A Fargate task has no persistent disk: everything on it is gone when the task stops or moves.

@@ -24,6 +24,7 @@ All notable changes to Binder are recorded here. The format follows [Keep a Chan
 - Single sign-on with OpenID Connect (`BINDER_AUTH=oidc`): Keycloak, Okta, Entra ID, Google, Authentik, and others. Authorization code flow with PKCE, `state`, and `nonce`; Binder verifies the ID token itself, with one configured algorithm (`BINDER_OIDC_SIGNING_ALG`: RS256, PS256, or ES256). Allow people by email (`BINDER_ALLOWED_USERS`), group (`BINDER_ALLOWED_GROUPS`), or Google Workspace domain (`BINDER_OIDC_HOSTED_DOMAIN`, checked against the signed `hd` claim). SSO sessions last 8 hours. The issuer, its endpoints, and `BINDER_PUBLIC_URL` must be https except on loopback (`BINDER_OIDC_ALLOW_HTTP=true` is for test networks only). CI signs in through a real Keycloak.
 - `BINDER_AUTH=none` for one person on a laptop. It answers only requests addressed to `localhost`, `127.0.0.1`, `[::1]`, or the host of `BINDER_PUBLIC_URL` (421 otherwise), against DNS rebinding.
 - A signed-out `GET /api/session` says which sign-in is on (`auth`, and `label` in oidc mode).
+- AWS quick start (`deploy/aws/`, [docs/aws.md](docs/aws.md)): one AWS CDK stack runs a private Binder on one ECS Fargate task (arm64) with S3 storage, an internal load balancer, and optional HTTPS and OIDC. Not yet deployed by CI.
 
 ### Changed
 

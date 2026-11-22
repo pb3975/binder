@@ -3,3 +3,5 @@ data/
 *.sqlite*
 .DS_Store
 deploy/ssh/local.env
+deploy/aws/cdk.out/
+deploy/aws/cdk.context.json

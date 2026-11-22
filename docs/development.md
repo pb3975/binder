@@ -39,6 +39,19 @@ scripts/e2e-oidc.sh              # signs in through a real Keycloak (quay.io/key
 
 CI runs all of these, plus an arm64 build once the repo is public (`.github/workflows/ci.yml`). Pushing a `v*` tag publishes a release; see [releasing.md](releasing.md). The e2e run checks publish, view, and history, and two security properties in a real browser: previews cannot reach internal http services, and an artifact in the viewer cannot read or change Binder.
 
+## AWS stack (`deploy/aws/`)
+
+The AWS quick start ([aws.md](aws.md)) is a separate package with its own lockfile, so the app gains no dependencies. It pins `aws-cdk-lib`, `constructs`, and the `aws-cdk` CLI. Bun runs the CDK app and its tests. Node.js 22 runs the CDK CLI.
+
+```sh
+cd deploy/aws
+bun install --frozen-lockfile
+bun run check                    # tsc and CDK assertion tests (bun test)
+bun run synth-check              # cdk synth for two configurations, then cfn-lint 1.60.1 (pipx install cfn-lint==1.60.1)
+```
+
+Neither needs AWS credentials. CI runs both in the `aws` job. The root `bunfig.toml` keeps the app's `bun test` to `test/`, so it never loads the stack's tests.
+
 ## Deploy over SSH (maintainers)
 
 `deploy/ssh/ship.sh` deploys to a Docker host behind `tailscale serve`, without a registry. It reads an env file that stays out of git (`deploy/ssh/local.env`; see `deploy/ssh/example.env`).

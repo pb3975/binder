@@ -44,7 +44,7 @@ Run the same command again with new content and a new `note` to see version hist
 - **Single sign-on.** With `BINDER_AUTH=oidc`, people sign in with your identity provider (Keycloak, Okta, Entra ID, Google, and others). Binder never stores a password. Agents keep using tokens.
 - **Or a proxy.** Behind Tailscale or another identity-aware proxy, Binder can trust the proxy's user header. It accepts the header only from the proxy's address and only for allowed logins.
 - **Or nothing, on your laptop.** `BINDER_AUTH=none` turns sign-in off and answers only requests addressed to `localhost`.
-- **Anywhere.** Docker Compose, plain `docker run`, bare Bun, or a cloud container host. On a host with no persistent disk, such as AWS Fargate, keep the files in S3 (`BINDER_STORAGE=s3://...`, see [Storage](docs/self-hosting.md#storage)). [`fly.toml`](fly.toml) is a Fly.io example (not yet deployed by CI).
+- **Anywhere.** Docker Compose, plain `docker run`, bare Bun, or a cloud container host. On a host with no persistent disk, such as AWS Fargate, keep the files in S3 (`BINDER_STORAGE=s3://...`, see [Storage](docs/self-hosting.md#storage)). [`fly.toml`](fly.toml) is a Fly.io example, and [docs/aws.md](docs/aws.md) deploys a private Binder on AWS (ECS Fargate and S3) with the CDK. Neither is deployed by CI yet.
 - **Previews.** The default image is small and shows a generated cover for each page. The `full` image renders preview images with Chromium. Use it when you trust your publishers. [Why](docs/design.md#previews).
 
 Everything is in [docs/self-hosting.md](docs/self-hosting.md).
