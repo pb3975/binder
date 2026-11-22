@@ -129,7 +129,7 @@ Pass each one as `-c key=value`.
 
 | Key | Default | What it does |
 |---|---|---|
-| `image` | `ghcr.io/pb3975/binder` | Image repository. |
+| `image` | `ghcr.io/pb3975/binder` | Image repository. A private ECR repository in this account (`<account>.dkr.ecr.<region>.amazonaws.com/<name>`, such as a mirror) works: the stack lets the task pull from it. Any other registry must allow anonymous pulls. |
 | `imageTag` | the version in `package.json` | Binder release to run. Synth refuses a release older than 0.2.0, because it has no S3 storage and Fargate would delete its data. |
 | `previews` | `slim` | `full` runs the `-full` image with Chromium previews. Read [why it is opt-in](design.md#previews). |
 | `auth` | `token` | `token`, `oidc`, or `none` (internal only, with a warning). `header` is refused: an ALB alone cannot make a user header safe. |

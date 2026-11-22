@@ -355,3 +355,27 @@ describe("the container's environment starts Binder", () => {
       expect(cfg.secretKey).not.toBeNull();
     });
 });
+
+describe("an image mirrored to a private ECR repository", () => {
+  const { template } = synth({ image: "123456789012.dkr.ecr.us-east-1.amazonaws.com/mirror/binder", imageTag: "0.2.0" });
+
+  test("the task runs that image, and the execution role may pull it", () => {
+    expect(JSON.stringify(container(template).Image)).toContain("/mirror/binder:0.2.0");
+    template.hasResourceProperties("AWS::IAM::Policy", {
+      PolicyDocument: {
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: Match.arrayWith(["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"]),
+            Resource: "arn:aws:ecr:us-east-1:123456789012:repository/mirror/binder",
+          }),
+          Match.objectLike({ Action: "ecr:GetAuthorizationToken" }),
+        ]),
+      },
+    });
+  });
+
+  test("an image from another registry gets no ECR rights", () => {
+    const policies = JSON.stringify(synth().template.findResources("AWS::IAM::Policy"));
+    expect(policies).not.toContain("ecr:");
+  });
+});

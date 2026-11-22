@@ -4,6 +4,7 @@
 import * as cdk from "aws-cdk-lib";
 import * as acm from "aws-cdk-lib/aws-certificatemanager";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
+import * as ecr from "aws-cdk-lib/aws-ecr";
 import * as ecs from "aws-cdk-lib/aws-ecs";
 import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
 import * as logs from "aws-cdk-lib/aws-logs";
@@ -119,8 +120,20 @@ export class BinderStack extends cdk.Stack {
       secrets.BINDER_OIDC_CLIENT_SECRET = ecs.Secret.fromSecretsManager(clientSecret);
     }
 
+    // An image in a private ECR repository of this account (a mirror) needs pull rights for the
+    // execution role; any other registry must allow anonymous pulls.
+    const ecrRepo = config.image.match(/^(\d{12})\.dkr\.ecr\.([a-z0-9-]+)\.amazonaws\.com\/(.+)$/);
+    const image = ecrRepo
+      ? ecs.ContainerImage.fromEcrRepository(
+          ecr.Repository.fromRepositoryAttributes(this, "ImageRepository", {
+            repositoryName: ecrRepo[3]!,
+            repositoryArn: `arn:${this.partition}:ecr:${ecrRepo[2]}:${ecrRepo[1]}:repository/${ecrRepo[3]}`,
+          }),
+          imageRef(config).slice(config.image.length + 1),
+        )
+      : ecs.ContainerImage.fromRegistry(imageRef(config));
     taskDefinition.addContainer(CONTAINER, {
-      image: ecs.ContainerImage.fromRegistry(imageRef(config)),
+      image,
       portMappings: [{ containerPort: PORT }],
       environment,
       secrets,
