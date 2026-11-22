@@ -1,8 +1,9 @@
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join, normalize } from "node:path";
-import { authenticator, SESSION_COOKIE, type Principal } from "./auth";
+import { authenticator, readCookie, SESSION_COOKIE, type Principal } from "./auth";
 import { loadConfig, type Config } from "./config";
 import { loadSecret, signer } from "./content";
+import { oidcClient } from "./oidc";
 import { openDb, sha256, type Artifact, type ArtifactRow, type FileEntry, type Version } from "./db";
 import { openReplication, retry, type Replication } from "./replication";
 import { openStorage, thumbKey, typeOf, versionKey, type NewFile, type Storage } from "./storage";
@@ -117,6 +118,20 @@ export function createApp(cfg: Config, opts: { now?: () => number; storage?: Sto
   for (const a of db.list()) if (!a.thumb) thumbs.enqueue(a.id);
 
   const auth = authenticator(cfg, db, sign, now);
+  const oidc = cfg.auth.mode === "oidc" ? oidcClient(cfg.auth, sign, now) : null;
+
+  // DNS rebinding defense for none mode: a page on another site can point its own name at
+  // 127.0.0.1, but its requests still carry that name in Host. Only Binder's own names pass.
+  const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
+  const publicHost = cfg.publicUrl ? new URL(cfg.publicUrl).hostname : null;
+  const hostAllowed = (req: Request) => {
+    try {
+      const name = new URL(`http://${req.headers.get("host")}`).hostname;
+      return LOOPBACK.has(name) || name === publicHost;
+    } catch {
+      return false;
+    }
+  };
 
   // Mutations need a custom header. A browser only sends one after a CORS
   // preflight, which Binder never approves, so artifact pages cannot write.
@@ -364,11 +379,12 @@ export function createApp(cfg: Config, opts: { now?: () => number; storage?: Sto
   function llmsTxt(req: Request): Response {
     const origin = originOf(req);
     const token = "send `Authorization: Bearer <token>` with every API request. Ask your user for one; never guess or create one.";
-    const access = cfg.devAnonymous
-      ? "This instance has authentication off. No token is needed."
-      : cfg.authHeader
-        ? `This instance trusts a sign-in proxy (such as Tailscale). If you reach it through that proxy as an allowed user, no token is needed. Otherwise ${token}`
-        : `This instance needs a token: ${token}`;
+    const access =
+      cfg.auth.mode === "none"
+        ? "This instance has authentication off. No token is needed."
+        : cfg.auth.mode === "header"
+          ? `This instance trusts a sign-in proxy (such as Tailscale). If you reach it through that proxy as an allowed user, no token is needed. Otherwise ${token}`
+          : `This instance needs a token: ${token}`;
     const body = `# Binder\n\n> A self-hosted library of agent-built pages, at ${origin}. ${access}\n\nSet \`BINDER_URL=${origin}\` and follow the steps below.\n\n${SKILL_BODY}`;
     return new Response(body, { headers: { "content-type": "text/markdown; charset=utf-8", "cache-control": "no-cache", "x-content-type-options": "nosniff" } });
   }
@@ -414,7 +430,8 @@ export function createApp(cfg: Config, opts: { now?: () => number; storage?: Sto
     const v = db.version(id, n);
     if (!v) return new Response("not found", { status: 404 });
     const prefix = `/c/${id}/${n}/${tok}/`;
-    const src = prefix + v.entry;
+    // The entry is a publisher-chosen file name; encode each segment so it stays inside the attribute.
+    const src = prefix + v.entry.split("/").map(encodeURIComponent).join("/");
     return new Response(
       `<!doctype html><style>html,body,iframe{margin:0;border:0;width:100%;height:100%;display:block}</style>` +
         `<iframe sandbox="allow-scripts" src="${src}"></iframe>`,
@@ -451,13 +468,38 @@ export function createApp(cfg: Config, opts: { now?: () => number; storage?: Sto
     const t = typeof body.token === "string" ? auth.checkToken(body.token.trim()) : null;
     if (!t) return fail(401, "invalid or revoked token");
     const { value, maxAge } = auth.sessionValue(t);
-    const attrs = `Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${secureCookie(req) ? "; Secure" : ""}`;
-    return json({ name: t.name, scope: t.scope, via: "session" }, 200, { "set-cookie": `${SESSION_COOKIE}=${value}; ${attrs}` });
+    return json({ name: t.name, scope: t.scope, via: "session" }, 200, { "set-cookie": sessionCookie(req, value, maxAge) });
   }
-  const signOut = (req: Request) =>
-    json({ signed_out: true }, 200, {
-      "set-cookie": `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${secureCookie(req) ? "; Secure" : ""}`,
-    });
+  const signOut = (req: Request) => json({ signed_out: true }, 200, { "set-cookie": sessionCookie(req, "", 0) });
+  const sessionCookie = (req: Request, value: string, maxAge: number) =>
+    `${SESSION_COOKIE}=${value}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${secureCookie(req) ? "; Secure" : ""}`;
+
+  /** /auth/login and /auth/callback, in oidc mode only. A failed sign-in lands on the sign-in screen with a reason code. */
+  async function sso(req: Request, path: string, url: URL): Promise<Response> {
+    if (!oidc) return new Response("not found", { status: 404 });
+    const go = (location: string, ...cookies: string[]) => {
+      const headers = new Headers({ location, "cache-control": "no-store", "referrer-policy": "no-referrer" });
+      for (const c of cookies) headers.append("set-cookie", c);
+      return new Response(null, { status: 302, headers });
+    };
+    if (path === "/auth/login") {
+      try {
+        const { location, setCookie } = await oidc.login(url.searchParams.get("next"));
+        return go(location, setCookie);
+      } catch (e) {
+        console.warn(`sign-in could not start: ${(e as Error).message}`);
+        return go("/?signin=failed");
+      }
+    }
+    const r = await oidc.callback(url.searchParams, (name) => readCookie(req, name));
+    const clear = r.clear ? [r.clear] : [];
+    if (!r.ok) {
+      console.warn(`sign-in refused (${r.reason}): ${r.detail}`);
+      return go(`/?signin=${r.reason}`, ...clear);
+    }
+    const { value, maxAge } = auth.oidcSessionValue(r.user);
+    return go(r.next, ...clear, sessionCookie(req, value, maxAge));
+  }
 
   /**
    * A successful write is answered only once it is durable: with S3 storage, the database copy must be
@@ -492,8 +534,11 @@ export function createApp(cfg: Config, opts: { now?: () => number; storage?: Sto
     let m: RegExpMatchArray | null;
 
     if (path === "/healthz") return healthz();
+    if (cfg.auth.mode === "none" && !hostAllowed(req))
+      return fail(421, `BINDER_AUTH=none answers only on localhost. Open Binder at http://localhost, or set BINDER_PUBLIC_URL to the URL you use.`);
     if (path === "/llms.txt") return llmsTxt(req);
     if (method === "GET" || method === "HEAD") {
+      if (path === "/auth/login" || path === "/auth/callback") return sso(req, path, url);
       // The UI shell is public. It holds no data, so a signed-out browser can show the sign-in screen.
       if (path === "/" || path.startsWith("/a/")) return staticFile("index.html");
       if (!/^\/(api|raw|thumb|c|render)\//.test(path)) return staticFile(path.slice(1));
@@ -507,6 +552,11 @@ export function createApp(cfg: Config, opts: { now?: () => number; storage?: Sto
     if (path === "/api/session" && method === "DELETE") return signOut(req);
 
     const result = auth.identify(req, server?.requestIP(req)?.address ?? null);
+    if (!result.ok && path === "/api/session" && method === "GET") {
+      // Tells a signed-out UI which sign-in to offer.
+      const how = cfg.auth.mode === "oidc" ? { auth: "oidc", label: cfg.auth.label } : { auth: cfg.auth.mode };
+      return json({ error: result.error, ...how }, result.status);
+    }
     if (!result.ok) return fail(result.status, result.error);
     const who = result.who;
     if (path === "/api/session" && method === "GET") return json(who);
@@ -590,8 +640,11 @@ if (import.meta.main) {
     console.error(`binder: cannot start: ${(e as Error).message}`);
     process.exit(1);
   }
-  if (cfg.devAnonymous) console.warn("BINDER_DEV_ANONYMOUS=1: authentication is OFF. Never use this outside local development.");
-  else if (!cfg.authHeader && !app.db.tokens.list().some((t) => !t.revoked_at))
+  if (cfg.auth.mode === "none")
+    console.warn("BINDER_AUTH=none: anyone who can reach Binder can read and publish. Use it only on your own machine.");
+  if (cfg.auth.mode === "oidc" && cfg.auth.allowHttp)
+    console.warn("BINDER_OIDC_ALLOW_HTTP=true: sign-in may use plain http. Use it only on an isolated test network.");
+  if (cfg.auth.mode === "token" && !app.db.tokens.list().some((t) => !t.revoked_at))
     console.log("No tokens yet. Create one with: binder token create --name <you>   (in Docker: docker compose exec binder binder token create --name <you>)");
   const server = Bun.serve({
     port: cfg.port,

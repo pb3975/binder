@@ -181,8 +181,16 @@ select { height: 34px; padding: 0 30px 0 11px; border: 1px solid var(--line); bo
 .signin-card input { height: 40px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--bg); font-family: ui-monospace, monospace; font-size: 13px; }
 .signin-card input:focus { outline: 0; border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus); }
 .signin-card .btn { height: 40px; }
-.signin-error { color: #c2410c; font-size: 13px; min-height: 1.5em; }
-.signin-error:empty { display: none; }
+.signin-card form, .signin-sso { display: flex; flex-direction: column; gap: 10px; }
+.signin-card form[hidden], .signin-sso[hidden] { display: none; }
+.signin-sso .btn { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; font-size: 15px; }
+.signin-sso:not([hidden]) + form { border-top: 1px solid var(--line); padding-top: 14px; }
+.linkish { align-self: center; border: 0; background: none; padding: 4px; color: var(--muted); font: inherit; font-size: 13px; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+.linkish:hover { color: var(--ink); }
+.signin-card .signin-error { color: #c2410c; font-size: 13px; min-height: 1.5em; }
+.signin-card .signin-error:empty { display: none; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .signin-card .signin-error { color: #fb923c; } }
+:root[data-theme="dark"] .signin-card .signin-error { color: #fb923c; }
 .muted { color: var(--muted); }
 .small { font-size: 12.5px; }
 

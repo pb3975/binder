@@ -467,7 +467,7 @@ function openHelp() {
   const lines = [
     `curl -fsS ${location.origin}/api/artifacts \\`,
     `  -H 'X-Binder: 1' \\`,
-    ...(state.me?.via === "header" ? [] : [`  -H "Authorization: Bearer $BINDER_TOKEN" \\`]),
+    ...(state.me?.via === "header" || state.me?.via === "none" ? [] : [`  -H "Authorization: Bearer $BINDER_TOKEN" \\`]),
     `  -F 'meta={"id":"agent-loops","title":"Agent Loops vs Graphs",`,
     `           "project":"fleet","kind":"explainer",`,
     `           "summary":"One sentence on what it is.",`,
@@ -507,13 +507,39 @@ window.addEventListener("popstate", () => {
 
 // ---------- Boot ----------
 // ---------- Sign in ----------
-function showSignIn(show) {
+// Why an SSO sign-in came back refused (/?signin=<code>). Fixed text, so a crafted link cannot put words here.
+const SIGNIN_ERRORS = {
+  denied: "Your account is not allowed in this Binder. Ask whoever runs it to add you.",
+  expired: "That sign-in took too long or was already used. Try again.",
+  failed: "Sign-in did not work. Try again, or ask whoever runs this Binder to check its logs.",
+};
+function showSignIn(show, how = {}) {
   $("#signin").hidden = !show;
   $(".shell").hidden = show;
   $(".search").style.visibility = show ? "hidden" : "";
   for (const id of ["#filters-toggle", "#help-btn"]) $(id).hidden = show;
-  if (show) setTimeout(() => $("#signin-token").focus(), 0);
+  if (!show) return;
+  const sso = how.auth === "oidc";
+  $("#signin-sso").hidden = !sso;
+  $("#signin-form").hidden = sso; // SSO first; a token stays one click away
+  if (sso) {
+    const p = new URLSearchParams(location.search);
+    $("#signin-sso-error").textContent = SIGNIN_ERRORS[p.get("signin")] ?? "";
+    p.delete("signin");
+    const qs = p.toString();
+    const here = location.pathname + (qs ? `?${qs}` : "");
+    history.replaceState(history.state, "", here);
+    $("#signin-sso-link").textContent = how.label || "Sign in with SSO";
+    $("#signin-sso-link").href = `/auth/login?next=${encodeURIComponent(here)}`;
+  }
+  setTimeout(() => (sso ? $("#signin-sso-link") : $("#signin-token")).focus(), 0);
 }
+$("#signin-use-token").addEventListener("click", () => {
+  $("#signin-form").hidden = false;
+  $("#signin-use-token").setAttribute("aria-expanded", "true");
+  $("#signin-use-token").hidden = true;
+  $("#signin-token").focus();
+});
 $("#signin-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const err = $("#signin-error");
@@ -529,14 +555,14 @@ $("#signin-form").addEventListener("submit", async (e) => {
 });
 function renderMe() {
   const b = $("#me-btn");
-  b.hidden = !state.me || state.me.via === "anonymous";
+  b.hidden = !state.me || state.me.via === "none";
   if (b.hidden) return;
-  const how = { session: "Sign out", header: "Signed in by your proxy", token: "" }[state.me.via] ?? "";
+  const how = { session: "Sign out", oidc: "Sign out", header: "Signed in by your proxy", token: "" }[state.me.via] ?? "";
   b.title = `Signed in as ${state.me.name}${state.me.scope === "read" ? " (read only)" : ""}. ${how}`.trim();
   b.setAttribute("aria-label", b.title);
 }
 $("#me-btn").addEventListener("click", async () => {
-  if (state.me?.via !== "session") return toast(`Signed in as ${state.me?.name}`);
+  if (state.me?.via !== "session" && state.me?.via !== "oidc") return toast(`Signed in as ${state.me?.name}`);
   if (!confirm(`Sign out ${state.me.name} on this browser?`)) return;
   await api("DELETE", "/api/session").catch(() => {});
   location.reload();
@@ -559,7 +585,7 @@ async function boot() {
   readUrl();
   if (store.get("panel", "0") === "1") { $("#v-panel").hidden = false; $("#v-info").setAttribute("aria-expanded", "true"); }
   const r = await fetch("/api/session").catch(() => null);
-  if (r?.status === 401) return showSignIn(true);
+  if (r?.status === 401) return showSignIn(true, await r.json().catch(() => ({})));
   if (!r?.ok) {
     $("#results").innerHTML = `<div class="empty"><h2>Could not reach Binder</h2><p>${esc(r ? (await r.json().catch(() => ({}))).error ?? r.statusText : "Network error")}</p></div>`;
     return;

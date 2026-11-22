@@ -45,6 +45,22 @@ jobs:
       - name: S3 storage end-to-end (${{ matrix.target }} image, MinIO)
         run: TARGET=${{ matrix.target }} scripts/e2e-s3.sh binder:ci-s3-${{ matrix.target }}-${{ github.run_id }}
 
+  # Signs in through a real Keycloak (pinned in the script) in Chromium: allowed and refused
+  # users, sign-out, and agent tokens in oidc mode.
+  e2e-oidc:
+    runs-on: ubuntu-latest # public repo: never self-hosted, so fork PRs cannot reach private machines
+    steps:
+      - uses: actions/checkout@v4
+      - name: OIDC end-to-end with Keycloak
+        run: mkdir -p shots && SHOTS=shots scripts/e2e-oidc.sh binder:ci-oidc-${{ github.run_id }}
+      - name: Keep the sign-in screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: oidc-signin-screenshots
+          path: shots/
+          if-no-files-found: ignore
+
   # Proves the image builds on arm64 (Raspberry Pi, Apple silicon hosts, Graviton).
   # GitHub's arm runners are free for public repositories only, so this runs once the repo is public.
   arm64:

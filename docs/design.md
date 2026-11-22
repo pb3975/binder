@@ -104,22 +104,39 @@ CI runs real Chromium against 21 attacks aimed at an internal http service, a ra
 
 ## Authentication
 
-Binder answers one question per request: who is this, and may they read or write? Three sources can answer it. The order is fixed.
+Binder answers one question per request: who is this, and may they read or write? `BINDER_AUTH` picks one of four modes: `token` (default), `none`, `oidc`, or `header`. The sources are checked in a fixed order.
 
-1. **`Authorization: Bearer <token>`.** If the header is present, it must be a valid token. Binder never falls through to another source.
-2. **Session cookie.** A person pastes a token once on the sign-in page. Binder sets `binder_session`, an HMAC-signed `<token id>.<expiry>` value (`HttpOnly`, `SameSite=Strict`, `Secure` on https, 30 days). Revoking the token ends the session.
-3. **Trusted proxy header**, only when `BINDER_AUTH_HEADER` is set. The header counts only when the request comes from an address in `BINDER_TRUSTED_PROXIES` (default `127.0.0.1,::1`), and its value must match `BINDER_ALLOWED_USERS` (exact logins, `*@domain`, or `*`). Otherwise it is ignored and logged. Tailscale is this mode with `BINDER_AUTH_HEADER=Tailscale-User-Login`.
+1. **`Authorization: Bearer <token>`**, in every mode. If the header is present, it must be a valid token. Binder never falls through to another source.
+2. **Session cookie.** `binder_session` (`HttpOnly`, `SameSite=Strict`, `Secure` on https) holds one of two HMAC-signed values, each with its own MAC purpose and format:
+   - A token session, `<token id>.<expiry>.<mac>`, after a person pastes a token on the sign-in page. It lasts 30 days. Revoking the token ends it.
+   - An SSO session, `o.<name>.<expiry>.<mac>`, after an OIDC sign-in, in oidc mode only. It lasts 8 hours. Its MAC covers the provider, client, and allowlist settings, so changing them ends every SSO session.
+3. **Trusted proxy header**, in header mode only (`BINDER_AUTH_HEADER`). The header counts only when the request comes from an address in `BINDER_TRUSTED_PROXIES` (default `127.0.0.1,::1`), and its value must match `BINDER_ALLOWED_USERS` (exact logins, `*@domain`, or `*`). Otherwise it is ignored and logged. Tailscale is this mode with `BINDER_AUTH_HEADER=Tailscale-User-Login`.
 
 The peer check stops other containers and other hosts from claiming an identity. It does not stop processes on the same host, which can reach the proxy's backend port anyway: through a Docker port mapping, every host process appears as the bridge gateway. The proxy must also overwrite the header on every request. `tailscale serve` does (reasoned from its documentation, not tested here).
 
-With none of these, the API answers 401. `BINDER_DEV_ANONYMOUS=1` turns auth off for local development only.
+4. **Anonymous writer**, in none mode only.
+
+With none of these, the API answers 401. A signed-out `GET /api/session` also says which mode is on (`auth`), so the UI offers the right sign-in.
+
+**None mode** is for one person on their own machine. Its risk is DNS rebinding: a site the person visits points its own name at `127.0.0.1` and calls Binder from the browser. Those requests still carry the site's name in `Host`. So none mode answers only for loopback names and the host of `BINDER_PUBLIC_URL` (any port), and gives every other request `421`. That check covers the shell, the API, and `/c/`.
+
+**OIDC mode** signs people in with the authorization code flow, PKCE (S256), `state`, and `nonce`:
+
+- `GET /auth/login?next=<path>` stores `state`, `nonce`, the PKCE verifier, and `next` in a signed cookie (`HttpOnly`, `Path=/auth/callback`, 10 minutes, `Secure` on https). Each sign-in gets its own cookie, named `binder_login_<first 16 characters of state>`, so two tabs never overwrite each other. The callback reads and clears only the cookie its `state` names. It is `SameSite=Lax` because the provider's redirect back is a cross-site top-level GET, which would not carry a Strict cookie. `next` must parse to a path on `BINDER_PUBLIC_URL`'s origin; otherwise it becomes `/`.
+- `GET /auth/callback` checks `state` and uses each login cookie once. It exchanges the code at the discovered token endpoint (`client_secret_basic`, or PKCE alone for a public client). The redirect URI is always `${BINDER_PUBLIC_URL}/auth/callback`, never built from `Host`.
+- The token response must be complete (RFC 6749 5.1): an `id_token`, an `access_token`, and `token_type` Bearer.
+- Binder verifies the ID token with Web Crypto. It accepts one algorithm, `BINDER_OIDC_SIGNING_ALG` (RS256, PS256, or ES256; RS256 by default), and the key type must fit it. It refuses any `crit` header. The key comes from the JWKS by `kid`. The JWKS is cached for an hour, refetched once on an unknown `kid`, and refetched at most once a minute after a bad signature, for a provider that replaces a key under the same `kid`. Binder checks `iss` exactly, that `aud` is Binder's client ID and nothing else (OIDC Core 3.1.3.7), `azp` when present, a non-empty `sub`, finite `exp` and `iat` with 60 s of skew, and `nonce`. It refuses `email_verified: false`, and, with `BINDER_OIDC_HOSTED_DOMAIN`, an `hd` claim that does not match.
+- The issuer, every discovered endpoint, and `BINDER_PUBLIC_URL` must be https, except on loopback or with the test-only `BINDER_OIDC_ALLOW_HTTP=true`. Binder parses each URL and checks its scheme.
+- The person's name is the `email` claim, or `preferred_username` without one. They get in when that name matches `BINDER_ALLOWED_USERS` or a group in the groups claim matches `BINDER_ALLOWED_GROUPS`.
+- A refused sign-in redirects to `/?signin=denied|expired|failed`. The UI shows fixed text for each code, so a crafted link cannot put words on the page. The server log has the detail.
+- The SSO session cookie is Strict. The browser does not send it on the redirect from the callback, but the shell is public, and the shell's `/api/session` call is same-site, so it does. The Keycloak e2e proves this.
 
 - **Tokens** have a name (a person or an agent: `alice`, `ci-bot`) and a scope: `read` or `write`. Binder stores only the SHA-256 of the secret. The format is `bnd_<id>_<secret>`: lookup by id, then a constant-time hash compare.
 - **Token management is a CLI on the server** (`binder token create|list|revoke`), not an HTTP API. Whoever can run commands where the data folder lives is the admin. That removes admin roles, an admin UI, and the most dangerous endpoints. A stranger gets the first token with one `docker compose exec` command.
 - **What is public:** `/healthz` and the static UI shell (no data). Everything under `/api/`, `/thumb/`, and `/raw/` needs an identity. `/c/` needs a valid signature.
 - **What the history records:** `published_by` is the authenticated name. `agent` and `host` are what the publisher says about itself.
 
-**Why not built-in OIDC.** It is the most code and the most security surface. It also does not help agents, which need tokens anyway. A team with SSO can put an identity-aware proxy in front and use header mode. That path is documented as a recipe, not tested in CI. The proxy must let `/c/` through, because those requests carry no cookie, and it must overwrite the identity header on every route.
+**Why built-in OIDC (changed 2026-11-21).** This review first rejected it as the most code and the most security surface. The proxy path it pointed teams to needs a second service, a proxy that lets `/c/` and Bearer requests through, and a header that must be overwritten on every route. That is more setup and more ways to get it wrong than a team should need for SSO. Built-in OIDC keeps the first principles: agents use tokens in every mode, people never get a Binder password, and the identity provider owns identity, passwords, and MFA. Binder verifies the ID token itself with Web Crypto and has no runtime dependency. A real Keycloak signs people in in CI. The proxy recipe stays for teams that already run one.
 
 **Why not per-artifact permissions.** A Binder instance is one team's shelf. A team that needs a wall between groups runs two instances. Each is one container and one folder.
 

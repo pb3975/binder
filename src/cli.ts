@@ -6,6 +6,8 @@ import { mkdirSync } from "node:fs";
 import { openDb } from "./db";
 import { openReplication } from "./replication";
 
+const AUTH_ENV = /^(BINDER_AUTH|BINDER_AUTH_HEADER|BINDER_TRUSTED_PROXIES|BINDER_ALLOWED_USERS|BINDER_ALLOWED_GROUPS|BINDER_DEV_ANONYMOUS|BINDER_OIDC_\w+|ALLOWED_LOGINS|DEV_ALLOW_ANONYMOUS)$/;
+
 const USAGE = `usage:
   binder token create --name <name> [--scope write|read]   print a new token (shown once)
   binder token list                                        list tokens (never shows secrets)
@@ -18,11 +20,13 @@ export async function run(argv: string[], env: Record<string, string | undefined
     const i = rest.indexOf(f);
     return i >= 0 ? rest[i + 1] : undefined;
   };
-  // The server's own parser, so storage and the Litestream socket mean the same thing here. Only the
-  // auth and preview checks are skipped: they apply to the server, not to this command.
+  // The server's own parser, so storage and the Litestream socket mean the same thing here. Auth and
+  // preview settings are dropped: they apply to the server, and auth settings must never stop an
+  // admin from making a token.
   let cfg: Config;
   try {
-    cfg = loadConfig({ ...env, BINDER_AUTH_HEADER: undefined, BINDER_PREVIEWS: "off" });
+    const kept = Object.entries(env).filter(([k]) => !AUTH_ENV.test(k));
+    cfg = loadConfig({ ...Object.fromEntries(kept), BINDER_PREVIEWS: "off" });
   } catch (e) {
     console.error(`binder: ${(e as Error).message}`);
     return 2;

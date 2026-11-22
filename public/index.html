@@ -60,15 +60,23 @@
   </div>
 
   <section class="signin" id="signin" hidden aria-labelledby="signin-title">
-    <form id="signin-form" class="signin-card">
+    <div class="signin-card">
       <h2 id="signin-title">Sign in to Binder</h2>
-      <p>Paste your Binder token. Binder keeps you signed in on this browser for 30 days.</p>
-      <label for="signin-token">Token</label>
-      <input id="signin-token" type="password" autocomplete="off" spellcheck="false" placeholder="bnd_…" required>
-      <p class="signin-error" id="signin-error" role="alert"></p>
-      <button class="btn primary" type="submit">Sign in</button>
-      <p class="muted small">No token? Ask whoever runs this Binder. On the server, they run <code>binder token create --name you</code>.</p>
-    </form>
+      <p class="signin-error" id="signin-sso-error" role="alert"></p>
+      <div class="signin-sso" id="signin-sso" hidden>
+        <p>Use your organization's account. Binder keeps you signed in on this browser for 8 hours.</p>
+        <a class="btn primary" id="signin-sso-link" href="/auth/login">Sign in with SSO</a>
+        <button class="linkish" type="button" id="signin-use-token" aria-expanded="false" aria-controls="signin-form">Use a Binder token instead</button>
+      </div>
+      <form id="signin-form">
+        <p>Paste your Binder token. Binder keeps you signed in on this browser for 30 days.</p>
+        <label for="signin-token">Token</label>
+        <input id="signin-token" type="password" autocomplete="off" spellcheck="false" placeholder="bnd_…" required>
+        <p class="signin-error" id="signin-error" role="alert"></p>
+        <button class="btn primary" type="submit">Sign in</button>
+        <p class="muted small">No token? Ask whoever runs this Binder. On the server, they run <code>binder token create --name you</code>.</p>
+      </form>
+    </div>
   </section>
 
   <section class="viewer" id="viewer" hidden aria-label="Artifact viewer">

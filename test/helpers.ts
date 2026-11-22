@@ -2,7 +2,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_PREVIEW_HOSTS, type Config } from "../src/config";
+import { DEFAULT_PREVIEW_HOSTS, type Config, type HeaderAuth } from "../src/config";
 import { createApp } from "../src/server";
 import type { Replication } from "../src/replication";
 import type { Storage } from "../src/storage";
@@ -12,8 +12,7 @@ export function startBinder(over: Partial<Config> = {}, opts: { now?: () => numb
   const cfg: Config = {
     dataDir, host: "127.0.0.1", port: 0, publicUrl: null, chromium: null, previewHosts: DEFAULT_PREVIEW_HOSTS,
     // Default: Tailscale-style header mode, as on a tailnet behind `tailscale serve`.
-    authHeader: "Tailscale-User-Login", allowedUsers: ["owner@example.com"], trustedProxies: ["127.0.0.1", "::1"],
-    devAnonymous: false, storage: { kind: "local" }, secretKey: null, litestreamSocket: null, ...over,
+    auth: headerAuth(), storage: { kind: "local" }, secretKey: null, litestreamSocket: null, ...over,
   };
   const app = createApp(cfg, { now: opts.now, storage: opts.storage, replication: opts.replication });
   const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: app.fetch });
@@ -27,6 +26,10 @@ export function startBinder(over: Partial<Config> = {}, opts: { now?: () => numb
     },
   };
 }
+
+export const headerAuth = (over: Partial<HeaderAuth> = {}): HeaderAuth => ({
+  mode: "header", header: "Tailscale-User-Login", allowedUsers: ["owner@example.com"], trustedProxies: ["127.0.0.1", "::1"], ...over,
+});
 
 export const owner = { "tailscale-user-login": "owner@example.com" };
 export const writer = { ...owner, "x-binder": "1" };
