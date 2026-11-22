@@ -99,21 +99,24 @@ h2 .tab { position: absolute; left: 0; top: .16em; width: 6px; height: .86em; bo
 .links { display: flex; flex-wrap: wrap; gap: 8px 24px; }
 
 .points { margin-top: 32px; }
+.cols > .points { margin-top: 0; }
 .points p { margin: 0; padding: 16px 0; border-top: 1px solid var(--line); font-size: 15.5px; }
 .points p:last-child { border-bottom: 1px solid var(--line); }
 .points strong { color: var(--ink); font-weight: 600; }
 
 .object { margin: 0; min-width: 0; }
+.span { grid-column: 1 / -1; }
 .stack { display: flex; flex-direction: column; gap: 16px; }
 .stack > p { margin: 4px 0; color: var(--ink-2); }
 
 /* Code blocks */
 .code { min-width: 0; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
 .code-head { display: flex; align-items: center; justify-content: space-between; min-height: 36px; padding: 6px 8px 0 16px; }
+.code-head.reply { border-top: 1px solid var(--line); }
 .label { color: var(--muted); font: 500 12px/1 var(--mono); }
 .copy { padding: 5px 9px; border: 0; border-radius: 7px; background: none; color: var(--ink-2); font-size: 13px; font-weight: 600; cursor: pointer; transition: background .12s, color .12s; }
 .copy:hover { background: var(--surface-2); color: var(--ink); }
-.code pre { margin: 0; padding: 8px 16px 16px; overflow-x: auto; font-size: 13px; line-height: 1.7; color: var(--ink); tab-size: 2; }
+.code pre { margin: 0; padding: 8px 16px 16px; overflow-x: auto; font-size: 12.5px; line-height: 1.7; color: var(--ink); tab-size: 2; }
 .code .c { color: var(--muted); }
 
 /* Version history model */

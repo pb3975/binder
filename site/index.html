@@ -80,12 +80,12 @@
         <div class="prose">
           <h2 id="publish-title"><span class="tab" aria-hidden="true"></span>One request to publish.</h2>
           <p>Any agent that can run curl can publish. There is no SDK, no MCP server, and nothing to install on the agent's machine.</p>
-          <div class="points">
-            <p><strong>Teach an agent once.</strong> Copy the <a href="https://github.com/pb3975/binder/tree/main/skill/binder">skill folder</a> into the agent's skills directory, or tell the agent to read <code>/llms.txt</code> on your Binder. Both give the same steps.</p>
-            <p><strong>One file or a folder.</strong> A single HTML file becomes <code>index.html</code>. For a folder, send one part per file, and relative links keep working.</p>
-          </div>
         </div>
-        <div class="object stack">
+        <div class="points">
+          <p><strong>Teach an agent once.</strong> Copy the <a href="https://github.com/pb3975/binder/tree/main/skill/binder">skill folder</a> into the agent's skills directory, or tell the agent to read <code>/llms.txt</code> on your Binder. Both give the same steps.</p>
+          <p><strong>One file or a folder.</strong> A single HTML file becomes <code>index.html</code>. For a folder, send one part per file, and relative links keep working.</p>
+        </div>
+        <div class="object span">
           <div class="code">
             <div class="code-head"><span class="label">shell</span><button class="copy" type="button" hidden>Copy</button></div>
             <pre data-source="README.md"><code>export BINDER_URL=http://localhost:8480 BINDER_TOKEN=bnd_...   <span class="c"># make a separate token per agent</span>
@@ -93,9 +93,7 @@ echo '&lt;h1&gt;Hello, Binder&lt;/h1&gt;' &gt; hello.html
 curl -fsS "$BINDER_URL/api/artifacts" -H 'X-Binder: 1' -H "Authorization: Bearer $BINDER_TOKEN" \
   -F 'meta={"id":"hello","title":"Hello","project":"demo","note":"First version"}' \
   -F 'file=@hello.html'</code></pre>
-          </div>
-          <div class="code">
-            <div class="code-head"><span class="label">response</span></div>
+            <div class="code-head reply"><span class="label">response</span></div>
             <pre><code>{
   <span class="c">…</span>
   "version": 1,
