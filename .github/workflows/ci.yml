@@ -24,6 +24,27 @@ jobs:
         # The docker:cli image ships the compose plugin, so this works on runners without it.
         run: docker run --rm -v "$PWD:/w:ro" -w /w docker:27.5-cli docker compose config -q
 
+  # The landing page (site/), as GitHub Pages serves it: built output checks, then real Chrome
+  # at phone and desktop widths in light and dark. test/site.test.ts also runs in `check`.
+  site:
+    runs-on: ubuntu-latest # public repo: never self-hosted, so fork PRs cannot reach private machines
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+      - name: Built page (links, origins, CSP, commands match README)
+        run: bun test test/site.test.ts
+      - name: Landing page in Chrome (the runner's preinstalled Chrome)
+        run: mkdir -p shots && CHROMIUM=$(command -v google-chrome) SHOTS=shots scripts/e2e-site.sh
+      - name: Keep the landing page screenshots
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: landing-page-screenshots
+          path: shots/
+          if-no-files-found: ignore
+
   e2e:
     runs-on: ubuntu-latest # public repo: never self-hosted, so fork PRs cannot reach private machines
     strategy:
